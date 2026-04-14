@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EduBot - Admission Assistant</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f111a;
+            --surface-color: rgba(25, 28, 41, 0.6);
+            --surface-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --primary-accent: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.4);
+            --secondary-accent: #8b5cf6;
+            --bot-bubble: rgba(30, 41, 59, 0.7);
+            --user-bubble: linear-gradient(135deg, #6366f1, #8b5cf6);
+            --glass-blur: blur(12px);
+            --font-main: 'Inter', sans-serif;
+            --font-head: 'Outfit', sans-serif;
+        }
+
+        [data-theme="light"] {
+            --bg-color: #f8fafc;
+            --surface-color: rgba(255, 255, 255, 0.8);
+            --surface-border: rgba(0, 0, 0, 0.08);
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --primary-accent: #4f46e5;
+            --primary-glow: rgba(79, 70, 229, 0.3);
+            --bot-bubble: rgba(241, 245, 249, 0.9);
+            --user-bubble: linear-gradient(135deg, #4f46e5, #7c3aed);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-main);
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: background-color 0.4s ease;
+            background-image:
+                radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.08), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.08), transparent 25%);
+        }
+
+        /* Header Layout */
+        .glass-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.25rem 2rem;
+            background: var(--surface-color);
+            backdrop-filter: var(--glass-blur);
+            border-bottom: 1px solid var(--surface-border);
+            z-index: 10;
+        }
+
+        .brand h1 {
+            font-family: var(--font-head);
+            font-weight: 800;
+            font-size: 1.5rem;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.2rem;
+        }
+
+        .brand p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .uni-select {
+            padding: 0.6rem 1rem;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--surface-border);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            font-size: 0.95rem;
+            outline: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            appearance: none;
+            padding-right: 2.5rem;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.7rem center;
+            background-size: 1em;
+        }
+
+        [data-theme="light"] .uni-select {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        .uni-select:focus {
+            border-color: var(--primary-accent);
+            box-shadow: 0 0 0 2px var(--primary-glow);
+        }
+
+        .theme-toggle {
+            background: transparent;
+            border: 1px solid var(--surface-border);
+            color: var(--text-primary);
+            padding: 0.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .theme-toggle:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Main Chat Area */
+        .chat-container {
+            flex: 1 1 0%;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* Chips Area */
+        .chips-container {
+            padding: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            overflow-x: auto;
+            scrollbar-width: none;
+            /* Firefox */
+        }
+
+        .chips-container::-webkit-scrollbar {
+            display: none;
+        }
+
+        .chip {
+            white-space: nowrap;
+            padding: 0.5rem 1rem;
+            background: var(--surface-color);
+            border: 1px solid var(--surface-border);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s;
+            backdrop-filter: var(--glass-blur);
+        }
+
+        .chip:hover {
+            background: var(--primary-accent);
+            border-color: var(--primary-accent);
+            color: #fff;
+            transform: translateY(-2px);
+        }
+
+        /* Chat Output */
+        .chat-output {
+            flex: 1 1 0%;
+            padding: 1rem 2rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            scroll-behavior: smooth;
+        }
+
+        /* Custom Scrollbar */
+        .chat-output::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-output::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .chat-output::-webkit-scrollbar-thumb {
+            background: var(--surface-border);
+            border-radius: 10px;
+        }
+
+        /* Messages */
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        @keyframes slideUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            align-self: flex-end;
+        }
+
+        .message.bot {
+            align-self: flex-start;
+        }
+
+        .msg-bubble {
+            padding: 1rem 1.25rem;
+            border-radius: 16px;
+            line-height: 1.5;
+            font-size: 0.95rem;
+            position: relative;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+        }
+
+        .user .msg-bubble {
+            background: var(--user-bubble);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .bot .msg-bubble {
+            background: var(--bot-bubble);
+            backdrop-filter: var(--glass-blur);
+            border: 1px solid var(--surface-border);
+            border-bottom-left-radius: 4px;
+        }
+
+        .bot-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.75rem;
+        }
+
+        .badge {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge.RAG_ONLY {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+        }
+
+        .badge.LLM_ONLY {
+            background: rgba(245, 158, 11, 0.15);
+            color: #f59e0b;
+        }
+
+        .badge.BLEND {
+            background: rgba(99, 102, 241, 0.15);
+            color: #818cf8;
+        }
+
+        .badge.GUARDRAIL {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        .latency {
+            color: var(--text-secondary);
+        }
+
+        /* Sources Accordion */
+        .sources-container {
+            margin-top: 0.75rem;
+            border-top: 1px solid var(--surface-border);
+            padding-top: 0.5rem;
+        }
+
+        .sources-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-family: var(--font-main);
+        }
+
+        .sources-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .sources-content {
+            display: none;
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            background: rgba(0, 0, 0, 0.1);
+            padding: 0.5rem;
+            border-radius: 6px;
+        }
+
+        .sources-content.open {
+            display: block;
+            animation: slideUp 0.3s ease;
+        }
+
+        .sources-list {
+            list-style-position: inside;
+        }
+
+        /* Input Area */
+        .chat-input-wrapper {
+            padding: 1rem 2rem 2rem;
+            background: linear-gradient(to top, var(--bg-color) 60%, transparent);
+            position: relative;
+            z-index: 10;
+        }
+
+        .chat-input-box {
+            display: flex;
+            background: var(--surface-color);
+            backdrop-filter: var(--glass-blur);
+            border: 1px solid var(--surface-border);
+            border-radius: 12px;
+            padding: 0.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        .chat-input-box:focus-within {
+            border-color: var(--primary-accent);
+            box-shadow: 0 10px 30px var(--primary-glow);
+        }
+
+        .chat-input-box input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 0.75rem 1rem;
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            font-size: 1rem;
+            outline: none;
+        }
+
+        .chat-input-box input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .chat-input-box button {
+            background: var(--primary-accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chat-input-box button:hover {
+            background: var(--secondary-accent);
+            transform: scale(1.05);
+        }
+
+        .chat-input-box button:disabled {
+            background: var(--surface-border);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Loading Dots */
+        .typing {
+            display: flex;
+            gap: 4px;
+            padding: 0.5rem;
+        }
+
+        .typing span {
+            width: 6px;
+            height: 6px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .typing span:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .typing span:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+
+        @keyframes bounce {
+
+            0%,
+            80%,
+            100% {
+                transform: scale(0);
+            }
+
+            40% {
+                transform: scale(1);
+            }
+        }
+
+        /* Markdown Parsing Basics */
+        .msg-bubble strong {
+            font-weight: 600;
+            color: var(--primary-accent);
+        }
+
+        .msg-bubble em {
+            font-style: italic;
+        }
+
+        .msg-bubble ul,
+        .msg-bubble ol {
+            margin: 0.5rem 0 0.5rem 1.5rem;
+        }
+
+        .msg-bubble li {
+            margin-bottom: 0.25rem;
+        }
+
+        .msg-bubble p {
+            margin-bottom: 0.75rem;
+        }
+
+        .msg-bubble p:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="glass-header">
+        <div class="brand">
+            <h1>EduBot</h1>
+            <p id="uni-location-header">Global Admission Assistant</p>
+        </div>
+        <div class="header-controls">
+            <button class="theme-toggle" id="theme-btn" aria-label="Toggle Theme">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <main class="chat-container">
+
+        <div class="chips-container" id="chips-container">
+            <div class="chip">What courses are offered?</div>
+            <div class="chip">How to apply?</div>
+            <div class="chip">Fee structure</div>
+            <div class="chip">Cutoff ranks</div>
+            <div class="chip">Career scope</div>
+        </div>
+
+        <div class="chat-output" id="chat-output">
+            <!-- Messages go here -->
+            <div class="message bot">
+                <div class="msg-bubble">
+                    <p>🎓 <strong>Welcome to EduBot!</strong> 👋</p>
+                    <p>I'm your AI-powered Admission Counselor, equipped to guide you through details across top universities.<br><br>Whether you're curious about <strong>courses, fee structures, cutoff ranks, or campus life</strong>, I'm here to help you navigate your academic journey.</p>
+                    <p><em>What would you like to explore today?</em></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-input-wrapper">
+            <form id="chat-form" class="chat-input-box">
+                <input type="text" id="chat-input" placeholder="Ask about admissions, fees, courses..."
+                    autocomplete="off">
+                <button type="submit" id="send-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </main>
+
+    <script>
+        const THEME_BTN = document.getElementById('theme-btn');
+        const CHAT_FORM = document.getElementById('chat-form');
+        const CHAT_INPUT = document.getElementById('chat-input');
+        const SEND_BTN = document.getElementById('send-btn');
+        const CHAT_OUTPUT = document.getElementById('chat-output');
+        const CHIPS_CONTAINER = document.getElementById('chips-container');
+
+        let session_id = 'sess_' + Math.random().toString(36).substr(2, 9);
+
+        // Theme Toggle
+        THEME_BTN.addEventListener('click', () => {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme');
+            const target = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', target);
+
+            const svgContent = target === 'dark'
+                ? '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>'
+                : '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+            THEME_BTN.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgContent}</svg>`;
+        });
+
+        // Chips click
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                CHAT_INPUT.value = chip.textContent;
+                CHAT_FORM.dispatchEvent(new Event('submit'));
+            });
+        });
+
+        // Make URLs clickable and simple markdown to HTML
+        function parseMarkdown(text) {
+            let html = text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" style="color:var(--primary-accent)">$1</a>')
+                .replace(/\n\n/g, '</p><p>')
+                .replace(/\n/g, '<br/>');
+
+            // Render basic badges inline if they exist like [From documents]
+            html = html.replace(/\[From documents\]/gi, '<span style="color:#10b981; font-weight:bold; font-size: 0.8em; margin-right:4px;">[From Documents]</span>');
+            html = html.replace(/\[General knowledge\]/gi, '<span style="color:#f59e0b; font-weight:bold; font-size: 0.8em; margin-right:4px;">[General Knowledge]</span>');
+
+            return `<p>${html}</p>`;
+        }
+
+        const appendSources = (sources) => {
+            if (!sources || sources.length === 0) return '';
+
+            const uqSources = Array.from(new Set(sources.map(s => s.filename)));
+            let html = `
+            <div class="sources-container">
+                <button class="sources-btn" onclick="this.nextElementSibling.classList.toggle('open')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    View Sources (${uqSources.length})
+                </button>
+                <div class="sources-content">
+                    <ul class="sources-list">
+            `;
+            uqSources.forEach(s => html += `<li>${s}</li>`);
+            html += `</ul></div></div>`;
+            return html;
+        };
+
+        const getModeLabel = (mode) => {
+            if (mode === 'RAG_ONLY') return 'Extract';
+            if (mode === 'LLM_ONLY') return 'General';
+            if (mode === 'BLEND') return 'Blended';
+            if (mode === 'GUARDRAIL') return 'Blocked';
+            return 'System';
+        };
+
+        function addBotMessage(text, meta = null, isSystem = false) {
+            const div = document.createElement('div');
+            div.className = 'message bot';
+
+            let metaHtml = '';
+            if (meta && meta.mode && meta.mode !== 'SYSTEM') {
+                const modeLabel = getModeLabel(meta.mode);
+                metaHtml = `
+                    <div class="bot-meta">
+                        <span class="badge ${meta.mode}">${modeLabel}</span>
+                        ${meta.cached ? '<span class="latency">⚡ Cached</span>' : ''}
+                        ${meta.latency_ms ? `<span class="latency">⏱ ${meta.latency_ms}ms</span>` : ''}
+                    </div>
+                `;
+            }
+
+            const sourcesHtml = meta && meta.sources ? appendSources(meta.sources) : '';
+
+            div.innerHTML = `
+                <div class="msg-bubble">
+                    ${metaHtml}
+                    ${parseMarkdown(text)}
+                    ${sourcesHtml}
+                </div>
+            `;
+            CHAT_OUTPUT.appendChild(div);
+            CHAT_OUTPUT.scrollTop = CHAT_OUTPUT.scrollHeight;
+            return div;
+        }
+
+        // Chat Submission
+        CHAT_FORM.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = CHAT_INPUT.value.trim();
+
+            if (!query) return;
+
+            // Add user message
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user';
+            userDiv.innerHTML = `<div class="msg-bubble"><p>${query.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p></div>`;
+            CHAT_OUTPUT.appendChild(userDiv);
+            CHAT_OUTPUT.scrollTop = CHAT_OUTPUT.scrollHeight;
+
+            CHAT_INPUT.value = '';
+
+            // Add typing indicator
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message bot';
+            typingDiv.innerHTML = `<div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;
+            CHAT_OUTPUT.appendChild(typingDiv);
+            CHAT_OUTPUT.scrollTop = CHAT_OUTPUT.scrollHeight;
+
+            try {
+                const res = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, session_id })
+                });
+
+                const data = await res.json();
+                typingDiv.remove();
+                addBotMessage(data.answer, data);
+
+            } catch (err) {
+                console.error(err);
+                typingDiv.remove();
+                addBotMessage("Sorry, I encountered a communication error with the server.", { mode: 'SYSTEM' });
+            }
+        });
+
+    </script>
+</body>
+
+</html>

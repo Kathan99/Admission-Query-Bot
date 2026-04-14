@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+chromadb
+sentence-transformers
+groq
+pypdf
+rank_bm25
+python-dotenv
+pydantic
+httpx
+numpy
+langchain-text-splitters
+pytesseract
+pdf2image
+redis
+python-multipart

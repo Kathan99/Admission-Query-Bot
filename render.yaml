@@ -1,0 +1,42 @@
+# render.yaml
+# Render Blueprint for Educational Chatbot
+
+services:
+  # Internal Memory Cache (Ephemeral or Persistent depending on plan)
+  - type: redis
+    name: chatbot-redis
+    plan: free # Redis free tier
+    ipAllowList: [] # Accessible only securely inside the Render network
+
+  # AI Backend Engine
+  - type: web
+    name: educational-chatbot-engine
+    env: docker
+    plan: standard # We recommend 'Standard' (2GB RAM) due to CrossEncoder memory usage
+    dockerfilePath: ./Dockerfile
+    
+    # Mount persistent storage for ChromaDB and ingested PDFs
+    disk:
+      name: persistent-storage
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false # User must provide this securely in the Render Dashboard
+      
+      # Tell the app to use the mounted persistent disk for vector layers
+      - key: STORAGE_DIR
+        value: /data 
+        
+      # Link directly to the internal Redis cluster mapping
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: chatbot-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: chatbot-redis
+          property: port

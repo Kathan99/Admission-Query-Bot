@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: yash-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  chatbot-backend:
+    build: .
+    container_name: yash-educational-bot
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    volumes:
+      # Map the local ChromaDB storage directory into the container to prevent database resets on updates
+      - ./chroma_db:/app/chroma_db
+      
+      # Bind the data folder so you can ingest new PDFs easily
+      - ./data:/app/data
+      
+      # Inject environment variables securely
+      - .env:/app/.env
+    restart: unless-stopped

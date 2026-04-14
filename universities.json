@@ -1,0 +1,74 @@
+[
+  {
+    "slug": "iitbombay",
+    "name": "IIT Bombay",
+    "location": "Mumbai, Maharashtra",
+    "type": "IIT",
+    "affiliating_body": "Autonomous (UGC)",
+    "admissions_email": "admissions@iitb.ac.in",
+    "admissions_phone": "+91-22-2572-2545",
+    "website": "https://www.iitb.ac.in",
+    "entrance_exams": ["JEE Advanced", "GATE", "CEED", "IIT JAM"],
+    "known_for": ["Engineering", "Technology", "Research"]
+  },
+  {
+    "slug": "iitdelhi",
+    "name": "IIT Delhi",
+    "location": "New Delhi",
+    "type": "IIT",
+    "affiliating_body": "Autonomous (UGC)",
+    "admissions_email": "admissions@admin.iitd.ac.in",
+    "admissions_phone": "+91-11-2659-1709",
+    "website": "https://home.iitd.ac.in",
+    "entrance_exams": ["JEE Advanced", "GATE", "IIT JAM"],
+    "known_for": ["Engineering", "Science", "Management"]
+  },
+  {
+    "slug": "dtudelhi",
+    "name": "Delhi Technological University (DTU)",
+    "location": "New Delhi",
+    "type": "State University",
+    "affiliating_body": "Government of NCT of Delhi",
+    "admissions_email": "admissions@dtu.ac.in",
+    "admissions_phone": "+91-11-2787-1018",
+    "website": "http://www.dtu.ac.in",
+    "entrance_exams": ["JEE Main", "JAC Delhi", "GATE"],
+    "known_for": ["Computer Engineering", "Mechanical Engineering", "Placements"]
+  },
+  {
+    "slug": "vitvellore",
+    "name": "Vellore Institute of Technology (VIT)",
+    "location": "Vellore, Tamil Nadu",
+    "type": "Deemed University",
+    "affiliating_body": "UGC",
+    "admissions_email": "ugadmission@vit.ac.in",
+    "admissions_phone": "+91-416-220-2125",
+    "website": "https://vit.ac.in",
+    "entrance_exams": ["VITEEE"],
+    "known_for": ["B.Tech", "M.Tech", "Private Engineering"]
+  },
+  {
+    "slug": "manipal",
+    "name": "Manipal Institute of Technology (MIT)",
+    "location": "Manipal, Karnataka",
+    "type": "Deemed University",
+    "affiliating_body": "MAHE",
+    "admissions_email": "admissions@manipal.edu",
+    "admissions_phone": "+91-92437-77700",
+    "website": "https://manipal.edu/mit.html",
+    "entrance_exams": ["MET (Manipal Entrance Test)"],
+    "known_for": ["Engineering", "Campus Life", "Alumni Network"]
+  },
+  {
+    "slug": "career-guidance",
+    "name": "General Career Guidance",
+    "location": "Global",
+    "type": "Knowledge Base",
+    "affiliating_body": "N/A",
+    "admissions_email": "careers@example.com",
+    "admissions_phone": "N/A",
+    "website": "N/A",
+    "entrance_exams": [],
+    "known_for": ["Career Scopes", "Career Outcomes", "General Knowledge"]
+  }
+]
