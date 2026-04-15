@@ -12,9 +12,8 @@ numpy
 langchain-text-splitters
 pytesseract
 pdf2image
+
+ docling==2.91.0
 redis
 python-multipart
-<<<<<<< HEAD
 cryptography
-=======
->>>>>>> 8a11d43 (Initialize Global RAG Chatbot Engine and client ingestion pipeline)
