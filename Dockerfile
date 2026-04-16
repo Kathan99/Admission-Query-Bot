@@ -16,10 +16,14 @@ WORKDIR /app
 
 # Create a non-root user for Hugging Face Spaces (UID 1000)
 RUN useradd -m -u 1000 user
+
+# Pre-create model cache directory and set permissions for the 'user'
+RUN mkdir -p /app/model_cache && chown -R 1000:1000 /app
+
 USER user
 ENV PATH="/home/user/.local/bin:$PATH"
 
-# Set model cache directories to /tmp or home dir so they are writable
+# Set model cache directories to ensure they are writable by the 'user'
 ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV HF_HOME=/app/model_cache
 
