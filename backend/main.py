@@ -75,6 +75,11 @@ def log_trace(data: dict):
     with open(trace_file, "a") as f:
         f.write(json.dumps(data) + "\n")
 
+@app.get("/")
+def read_root():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/frontend/index.html")
+
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
