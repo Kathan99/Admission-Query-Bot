@@ -1,3 +1,13 @@
+---
+title: University Admission RAG Chatbot
+emoji: 🎓
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # University Admission RAG Chatbot
 
 A production-grade, multi-university RAG (Retrieval-Augmented Generation) chatbot. It supports serving multiple universities, leveraging specific knowledge extracted from university documents (PDFs, TXT, CSV), while maintaining fallback abilities using the general knowledge of large language models for generic questions.

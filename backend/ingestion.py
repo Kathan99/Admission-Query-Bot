@@ -28,10 +28,14 @@ def extract_text_from_pdf(filepath):
             # Fallback to OCR if less than 50 characters were extracted
             if not text or len(text.strip()) < 50:
                 print(f"Page {i+1} seems to be an image. Running OCR...")
-                # Extract specifically this page (1-indexed for pdf2image)
-                images = convert_from_path(filepath, first_page=i+1, last_page=i+1)
-                if images:
-                    text = pytesseract.image_to_string(images[0])
+                try:
+                    # Extract specifically this page (1-indexed for pdf2image)
+                    images = convert_from_path(filepath, first_page=i+1, last_page=i+1)
+                    if images:
+                        text = pytesseract.image_to_string(images[0])
+                except Exception as e:
+                    print(f"OCR failed for page {i+1} of {filepath}: {e}")
+                    text = "" # Fallback to empty text for this page
             
             if text and text.strip():
                 text_data.append({"text": text, "page": i + 1})

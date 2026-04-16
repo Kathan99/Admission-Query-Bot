@@ -14,6 +14,15 @@ RUN apt-get update && apt-get install -y \
 # Set the working directory
 WORKDIR /app
 
+# Create a non-root user for Hugging Face Spaces (UID 1000)
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
+
+# Set model cache directories to /tmp or home dir so they are writable
+ENV TRANSFORMERS_CACHE=/app/model_cache
+ENV HF_HOME=/app/model_cache
+
 # Copy the requirements file and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -23,10 +32,15 @@ COPY download_models.py .
 RUN python download_models.py
 
 # Copy the rest of the application codebase
+# We do this as root then switch back to ensure permissions are correct if needed
+# but since we already switched to USER 1000, we should just COPY and ensure ownership
+USER root
 COPY . .
+RUN chown -R user:user /app
+USER user
 
-# Expose Uvicorn's default port
-EXPOSE 8000
+# Expose Hugging Face's default port
+EXPOSE 7860
 
 # Command to boot up the FastAPI server
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "7860"]

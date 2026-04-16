@@ -42,6 +42,16 @@ app.add_middleware(
 
 import redis
 
+@app.on_event("startup")
+async def startup_event():
+    # Pre-load models at startup so the first request is fast
+    print("Pre-loading AI models...")
+    try:
+        RetrievalManager._init_models()
+        print("AI Models loaded successfully.")
+    except Exception as e:
+        print(f"Error pre-loading models: {e}")
+
 os.makedirs(settings.log_dir, exist_ok=True)
 chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
 
