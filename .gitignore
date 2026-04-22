@@ -32,7 +32,7 @@ env/
 .LSOverride
 
 # Application specific
-# chroma_db/
+chroma_db/
 data/
 logs/
 scratch*.py
