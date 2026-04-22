@@ -46,7 +46,7 @@ os.makedirs(settings.log_dir, exist_ok=True)
 chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
 
 # Conversation Memory Store using Redis
-redis_host = os.getenv("REDIS_HOST", "localhost")
+redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
 
@@ -285,4 +285,11 @@ async def chat_endpoint(request: ChatRequest):
     })
 
 # Serve static frontend files
+app.mount("/data", StaticFiles(directory=settings.data_dir), name="data")
+from fastapi.responses import HTMLResponse
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_panel():
+    return open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "admin.html")).read()
+
 app.mount("/frontend", StaticFiles(directory=os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")), name="frontend")
