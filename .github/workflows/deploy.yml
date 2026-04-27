@@ -11,9 +11,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 20m
           script: |
             cd /home/ubuntu/deployment/Admission-Query-Bot
-            git remote set-url origin https://kartikcoder18:${{ secrets.GH_TOKEN }}@github.com/Kathan99/Admission-Query-Bot.git
             git pull origin main
             cd /home/ubuntu/deployment
             docker compose -f docker-compose.prod.yml up --build -d
