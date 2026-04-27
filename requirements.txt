@@ -14,4 +14,7 @@ pytesseract
 pdf2image
 redis
 python-multipart
+<<<<<<< HEAD
 cryptography
+=======
+>>>>>>> 8a11d43 (Initialize Global RAG Chatbot Engine and client ingestion pipeline)
