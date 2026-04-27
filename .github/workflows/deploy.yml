@@ -15,7 +15,6 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/deployment/Admission-Query-Bot
-            git restore chroma_db/
             git pull origin main
             cd /home/ubuntu/deployment
             docker compose -f docker-compose.prod.yml up --build -d
