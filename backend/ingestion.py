@@ -1,61 +1,135 @@
 import os
 import argparse
-import uuid
+import hashlib
+import shutil
 from datetime import datetime
-from pypdf import PdfReader
+from typing import Optional, List
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import chromadb
 from chromadb.utils import embedding_functions
 from groq import Groq
-import pytesseract
-from pdf2image import convert_from_path
+
+# Docling is used for all PDF extraction (native + scanned PDFs).
+# Import lazily to avoid paying import/model init cost unless ingestion runs.
+_DOC_CONVERTER = None
+
+def _get_docling_converter():
+    global _DOC_CONVERTER
+    if _DOC_CONVERTER is None:
+        from docling.document_converter import DocumentConverter
+
+        _DOC_CONVERTER = DocumentConverter()
+    return _DOC_CONVERTER
 
 # To allow relative imports if run as a script or module
 try:
     from backend.config import settings, load_universities
 except ModuleNotFoundError:
     import sys
+
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from backend.config import settings, load_universities
 
-def extract_text_from_pdf(filepath):
-    text_data = []
+
+def extract_text_from_pdf(filepath: str):
+    """Extract per-page text from a PDF using Docling.
+
+    Returns: [{"text": str, "page": int}, ...]
+
+    We preserve page numbers using Docling provenance (prov.page_no) for better citations.
+    """
+
     try:
-        reader = PdfReader(filepath)
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            
-            # Fallback to OCR if less than 50 characters were extracted
-            if not text or len(text.strip()) < 50:
-                print(f"Page {i+1} seems to be an image. Running OCR...")
-                try:
-                    # Extract specifically this page (1-indexed for pdf2image)
-                    images = convert_from_path(filepath, first_page=i+1, last_page=i+1)
-                    if images:
-                        text = pytesseract.image_to_string(images[0])
-                except Exception as e:
-                    print(f"OCR failed for page {i+1} of {filepath}: {e}")
-                    text = "" # Fallback to empty text for this page
-            
-            if text and text.strip():
-                text_data.append({"text": text, "page": i + 1})
+        converter = _get_docling_converter()
+        doc = converter.convert(filepath).document
     except Exception as e:
-        print(f"Error reading PDF {filepath}: {e}")
+        print(f"Docling failed to read PDF {filepath}: {e}")
+        return []
+
+    page_chunks: dict[int, list[str]] = {}
+
+    try:
+        for item, _level in doc.iterate_items():
+            prov = getattr(item, "prov", None)
+            if not prov:
+                continue
+
+            page_no = getattr(prov[0], "page_no", None)
+            if not page_no:
+                continue
+
+            piece = None
+            if hasattr(item, "text") and isinstance(getattr(item, "text"), str):
+                piece = item.text
+            elif hasattr(item, "export_to_markdown"):
+                try:
+                    import inspect
+
+                    sig = inspect.signature(item.export_to_markdown)
+                    if "doc" in sig.parameters:
+                        piece = item.export_to_markdown(doc=doc)
+                    else:
+                        piece = item.export_to_markdown()
+                except Exception:
+                    piece = None
+
+            if not piece:
+                continue
+
+            piece = piece.strip()
+            if not piece:
+                continue
+
+            pn = int(page_no)
+            page_chunks.setdefault(pn, []).append(piece)
+
+    except Exception as e:
+        print(f"Docling extraction failed for {filepath}: {e}")
+        return []
+
+    text_data: list[dict] = []
+    for pn in sorted(page_chunks.keys()):
+        # De-dupe while preserving order (Docling can emit repeated fragments).
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in page_chunks[pn]:
+            if s in seen:
+                continue
+            seen.add(s)
+            deduped.append(s)
+
+        joined = "\n".join(deduped).strip()
+        if joined:
+            text_data.append({"text": joined, "page": pn})
+
+    # As a safety net, if provenance iteration produced nothing, fall back to whole-doc markdown.
+    if not text_data:
+        try:
+            md = doc.export_to_markdown().strip()
+            if md:
+                return [{"text": md, "page": 1}]
+        except Exception:
+            pass
+
     return text_data
+
 
 def extract_text_from_txt(filepath):
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             return [{"text": f.read(), "page": 1}]
     except Exception as e:
         print(f"Error reading TXT {filepath}: {e}")
         return []
 
+
 def extract_text_from_csv(filepath):
     import csv
+
     text_data = []
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             for i, row in enumerate(reader):
                 text_data.append({"text": ", ".join(row), "page": i + 1})
@@ -63,7 +137,13 @@ def extract_text_from_csv(filepath):
         print(f"Error reading CSV {filepath}: {e}")
     return text_data
 
+
 def generate_global_context(filename: str, full_text: str) -> str:
+    if not settings.enable_global_context:
+        return ""
+    if not settings.groq_api_key:
+        return ""
+
     try:
         client = Groq(api_key=settings.groq_api_key)
         prompt = (
@@ -76,49 +156,59 @@ def generate_global_context(filename: str, full_text: str) -> str:
             f"Document Text:\n{full_text[:8000]}"
         )
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=settings.hyde_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=200
+            max_tokens=200,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"Failed to generate context for {filename}: {e}")
-        return f"Summary: Extracted from {filename}\nKeywords: {filename}"
+        return ""
 
-def ingest_university(university_slug):
-    universities = load_universities()
-    uni_meta = next((u for u in universities if u["slug"] == university_slug), None)
-    if not uni_meta:
-        print(f"University '{university_slug}' not found in universities.json.")
-        return False
-    
-    uni_data_dir = os.path.join(settings.data_dir, university_slug)
-    os.makedirs(uni_data_dir, exist_ok=True)
-    
-    # Initialize splitter (larger chunks retain table context and syllabus lists better)
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=300
-    )
-    
-    # Initialize Chroma Client and Collection
-    chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
-    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=settings.embedding_model
-    )
-    collection_name = f"uni_{university_slug}"
-    
+
+def _stable_chunk_id(university_slug: str, filename: str, page: int, chunk_index: int, file_digest: str) -> str:
+    raw = f"{university_slug}|{filename}|{file_digest}|{page}|{chunk_index}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _file_sha1(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]] = None) -> bool:
+    """Ingest documents directly from data/ into a single Chroma collection."""
+
+    data_dir = settings.data_dir
+    os.makedirs(data_dir, exist_ok=True)
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
+
+    # Initialize Chroma
     try:
-        chroma_client.delete_collection(name=collection_name)
-    except Exception:
-        pass
+        chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
+    except Exception as e:
+        print(f"Failed to open Chroma DB: {e}")
+        return False
+
+    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
+    collection_name = settings.corpus_collection
+
+    if reset_collection:
+        try:
+            chroma_client.delete_collection(name=collection_name)
+        except Exception:
+            pass
 
     try:
         collection = chroma_client.get_or_create_collection(
-            name=collection_name, 
+            name=collection_name,
             embedding_function=sentence_transformer_ef,
-            metadata={"hnsw:space": "cosine"}
+            metadata={"hnsw:space": "cosine"},
         )
     except Exception as e:
         print(f"Failed to create collection {collection_name}: {e}")
@@ -127,94 +217,281 @@ def ingest_university(university_slug):
     documents = []
     metadatas = []
     ids = []
-    
-    # Function to add chunk
-    def add_chunk(chunk_text, source_meta):
+
+    def add_chunk(chunk_text, source_meta, chunk_id: str):
         documents.append(chunk_text)
         metadatas.append(source_meta)
-        ids.append(str(uuid.uuid4()))
+        ids.append(chunk_id)
 
-    # 1. Ingest registry metadata directly
+    file_paths: list[str] = []
+    for root, dirs, files in os.walk(data_dir):
+        # skip hidden folders
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if f.startswith("."):
+                continue
+            fp = os.path.join(root, f)
+            if os.path.isfile(fp):
+                file_paths.append(fp)
+
+    if only_files:
+        only_set = set(only_files)
+        file_paths = [
+            fp
+            for fp in file_paths
+            if os.path.relpath(fp, data_dir) in only_set or os.path.basename(fp) in only_set
+        ]
+
+    corpus_slug = settings.corpus_meta_slug
+
+    for filepath in file_paths:
+        file = os.path.relpath(filepath, data_dir)
+        ext = file.split(".")[-1].lower()
+
+        if ext not in {"pdf", "txt", "csv"}:
+            continue
+
+        extracted_pages = []
+        if ext == "pdf":
+            extracted_pages = extract_text_from_pdf(filepath)
+        elif ext == "txt":
+            extracted_pages = extract_text_from_txt(filepath)
+        elif ext == "csv":
+            extracted_pages = extract_text_from_csv(filepath)
+
+        full_text = " ".join([p["text"] for p in extracted_pages])
+        if not full_text.strip():
+            continue
+
+        try:
+            file_digest = _file_sha1(filepath)
+        except Exception:
+            file_digest = str(os.path.getmtime(filepath))
+
+        global_context = ""
+        if settings.enable_global_context:
+            print(f"Generating global context for {file} via LLM...")
+            global_context = generate_global_context(file, full_text)
+
+        for page_data in extracted_pages:
+            chunks = text_splitter.split_text(page_data["text"])
+            for idx, chunk in enumerate(chunks):
+                if global_context:
+                    enriched_chunk = (
+                        f"--- Document Context ---\nFile: {file}\n{global_context}\n\n"
+                        f"--- Page Content ---\n{chunk}"
+                    )
+                else:
+                    enriched_chunk = f"File: {file}\nPage: {page_data['page']}\n\n{chunk}"
+
+                meta = {
+                    "university_slug": corpus_slug,
+                    "filename": file,
+                    "page_number": page_data["page"],
+                    "chunk_index": idx,
+                    "file_digest": file_digest,
+                    "ingested_at": datetime.now().isoformat(),
+                }
+
+                add_chunk(
+                    enriched_chunk,
+                    meta,
+                    chunk_id=_stable_chunk_id(corpus_slug, file, page_data["page"], idx, file_digest),
+                )
+
+    if documents:
+        batch_size = 2000
+        for i in range(0, len(documents), batch_size):
+            collection.upsert(
+                documents=documents[i : i + batch_size],
+                metadatas=metadatas[i : i + batch_size],
+                ids=ids[i : i + batch_size],
+            )
+        print(f"Successfully ingested/upserted {len(documents)} chunks into {collection_name}.")
+    else:
+        print(f"No documents processed for collection {collection_name}.")
+
+    return True
+
+
+def ingest_university(university_slug: str, reset_collection: bool = True, only_files: Optional[List[str]] = None) -> bool:
+    """Legacy multi-university ingestion.
+
+    If SINGLE_CORPUS=true, we ingest from data/ root into one collection.
+    """
+
+    if settings.single_corpus:
+        return ingest_corpus(reset_collection=reset_collection, only_files=only_files)
+
+    universities = load_universities()
+    uni_meta = next((u for u in universities if u.get("slug") == university_slug), None)
+    if not uni_meta:
+        print(f"University '{university_slug}' not found in universities.json.")
+        return False
+
+    uni_data_dir = os.path.join(settings.data_dir, university_slug)
+    os.makedirs(uni_data_dir, exist_ok=True)
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
+
+    # Initialize Chroma
+    try:
+        chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
+    except Exception as e:
+        print(f"Failed to open Chroma DB: {e}")
+        return False
+
+    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
+    collection_name = f"uni_{university_slug}"
+
+    if reset_collection:
+        try:
+            chroma_client.delete_collection(name=collection_name)
+        except Exception:
+            pass
+
+    try:
+        collection = chroma_client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=sentence_transformer_ef,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as e:
+        print(f"Failed to create collection {collection_name}: {e}")
+        return False
+
+    documents = []
+    metadatas = []
+    ids = []
+
+    def add_chunk(chunk_text, source_meta, chunk_id: str):
+        documents.append(chunk_text)
+        metadatas.append(source_meta)
+        ids.append(chunk_id)
+
+    # Ensure registry meta chunk exists (idempotent)
     registry_text = (
         f"University Name: {uni_meta.get('name')}\n"
         f"Location: {uni_meta.get('location')}\n"
         f"Type: {uni_meta.get('type')}\n"
         f"Affiliating Body: {uni_meta.get('affiliating_body')}\n"
-        f"Entrance Exams: {', '.join(uni_meta.get('entrance_exams', []))}\n"
-        f"Known For: {', '.join(uni_meta.get('known_for', []))}\n"
+        f"Entrance Exams: {', '.join(uni_meta.get('entrance_exams', []) or [])}\n"
+        f"Known For: {', '.join(uni_meta.get('known_for', []) or [])}\n"
         f"Admissions Email: {uni_meta.get('admissions_email')}\n"
         f"Admissions Phone: {uni_meta.get('admissions_phone')}\n"
         f"Website: {uni_meta.get('website')}"
     )
-    add_chunk(registry_text, {
-        "university_slug": university_slug,
-        "filename": "universities.json",
-        "page_number": 1,
-        "chunk_index": 0,
-        "ingested_at": datetime.now().isoformat()
-    })
+    add_chunk(
+        registry_text,
+        {
+            "university_slug": university_slug,
+            "filename": "universities.json",
+            "page_number": 1,
+            "chunk_index": 0,
+            "ingested_at": datetime.now().isoformat(),
+        },
+        chunk_id=_stable_chunk_id(university_slug, "universities.json", 1, 0, "registry"),
+    )
 
-    # 2. Iterate over files
     files = [f for f in os.listdir(uni_data_dir) if os.path.isfile(os.path.join(uni_data_dir, f))]
+    if only_files:
+        only_set = set(only_files)
+        files = [f for f in files if f in only_set]
+
     for file in files:
         filepath = os.path.join(uni_data_dir, file)
-        ext = file.split('.')[-1].lower()
-        extracted_pages = []
-        
-        if ext == 'pdf':
-            extracted_pages = extract_text_from_pdf(filepath)
-        elif ext == 'txt':
-            extracted_pages = extract_text_from_txt(filepath)
-        elif ext == 'csv':
-            extracted_pages = extract_text_from_csv(filepath)
-        else:
+        ext = file.split(".")[-1].lower()
+
+        if ext not in {"pdf", "txt", "csv"}:
             continue
-            
+
+        extracted_pages = []
+        if ext == "pdf":
+            extracted_pages = extract_text_from_pdf(filepath)
+        elif ext == "txt":
+            extracted_pages = extract_text_from_txt(filepath)
+        elif ext == "csv":
+            extracted_pages = extract_text_from_csv(filepath)
+
         full_text = " ".join([p["text"] for p in extracted_pages])
         if not full_text.strip():
             continue
-            
-        print(f"Generating global context for {file} via LLM...")
-        global_context = generate_global_context(file, full_text)
-            
+
+        try:
+            file_digest = _file_sha1(filepath)
+        except Exception:
+            file_digest = str(os.path.getmtime(filepath))
+
+        global_context = ""
+        if settings.enable_global_context:
+            print(f"Generating global context for {file} via LLM...")
+            global_context = generate_global_context(file, full_text)
+
         for page_data in extracted_pages:
             chunks = text_splitter.split_text(page_data["text"])
             for idx, chunk in enumerate(chunks):
-                enriched_chunk = f"--- Document Context ---\nFile: {file}\n{global_context}\n\n--- Page Content ---\n{chunk}"
-                
-                add_chunk(enriched_chunk, {
+                if global_context:
+                    enriched_chunk = (
+                        f"--- Document Context ---\nFile: {file}\n{global_context}\n\n"
+                        f"--- Page Content ---\n{chunk}"
+                    )
+                else:
+                    enriched_chunk = f"File: {file}\nPage: {page_data['page']}\n\n{chunk}"
+
+                meta = {
                     "university_slug": university_slug,
                     "filename": file,
                     "page_number": page_data["page"],
                     "chunk_index": idx,
-                    "ingested_at": datetime.now().isoformat()
-                })
-                
-    # 3. Store in Chroma
+                    "file_digest": file_digest,
+                    "ingested_at": datetime.now().isoformat(),
+                }
+
+                add_chunk(
+                    enriched_chunk,
+                    meta,
+                    chunk_id=_stable_chunk_id(university_slug, file, page_data["page"], idx, file_digest),
+                )
+
     if documents:
-        # Batch insert into Chroma (recommended batch size is < 41666 for sqlite)
-        batch_size = 5000
+        batch_size = 2000
         for i in range(0, len(documents), batch_size):
             collection.upsert(
-                documents=documents[i:i+batch_size],
-                metadatas=metadatas[i:i+batch_size],
-                ids=ids[i:i+batch_size]
+                documents=documents[i : i + batch_size],
+                metadatas=metadatas[i : i + batch_size],
+                ids=ids[i : i + batch_size],
             )
-        print(f"Successfully ingested {len(documents)} chunks for {university_slug}.")
+        print(f"Successfully ingested/upserted {len(documents)} chunks for {university_slug}.")
     else:
         print(f"No documents processed for {university_slug}.")
 
     return True
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ingest university documents")
-    parser.add_argument("--university", required=True, help="The slug of the university to ingest, or 'all' to ingest all")
+    parser = argparse.ArgumentParser(
+        description="Ingest documents from the data/ folder into Chroma."
+    )
+    parser.add_argument(
+        "--university",
+        required=False,
+        default=None,
+        help=(
+            "Legacy: Optional slug to ingest (e.g., iitbombay). "
+            "If omitted, ingests from data/ root into the shared corpus collection."
+        ),
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Do not reset collections (upsert only).",
+    )
     args = parser.parse_args()
-    
-    if args.university.lower() == 'all':
-        universities = load_universities()
-        for uni in universities:
-            print(f"\n=== Ingesting {uni['name']} ({uni['slug']}) ===")
-            ingest_university(uni['slug'])
+
+    reset = not args.incremental
+
+    if args.university:
+        ingest_university(args.university, reset_collection=reset)
     else:
-        ingest_university(args.university)
+        # Default: ingest from data/ root into a single shared collection.
+        ingest_corpus(reset_collection=reset)

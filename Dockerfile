@@ -2,13 +2,13 @@
 FROM python:3.11-slim
 
 # Install system dependencies
-# - tesseract-ocr: Needed for processing image-based PDFs
-# - poppler-utils: Needed for pdf2image conversion
-# - build-essential: Needed for some C-based python packages (like ChromaDB/HNWSLite)
+# - build-essential: Needed for some C-based python packages
+# - libgomp1/libglib2.0-0/libgl1: common runtime deps for ML/OCR stacks used by Docling
 RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    poppler-utils \
     build-essential \
+    libgomp1 \
+    libglib2.0-0 \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory

@@ -13,6 +13,7 @@ except ModuleNotFoundError:
 
 client = Groq(api_key=settings.groq_api_key)
 
+
 class GenerationManager:
     @staticmethod
     def generate_hyde_response(query: str) -> str:
@@ -25,20 +26,20 @@ class GenerationManager:
         try:
             chat_completion = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                model=settings.groq_model,
+                model=settings.hyde_model,
                 temperature=0.3,
-                max_tokens=150
+                max_tokens=settings.hyde_max_tokens,
             )
             return chat_completion.choices[0].message.content
         except Exception as e:
             print(f"HyDE generation failed: {e}")
-            return query # fallback to query
+            return query  # fallback
 
     @staticmethod
     def contextualize_query(query: str, chat_history: list) -> str:
         if not chat_history:
             return query
-            
+
         history_text = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in chat_history])
         prompt = (
             "Given the following conversation history and the latest user query, "
@@ -49,13 +50,13 @@ class GenerationManager:
             f"Latest Query: {query}\n\n"
             "Standalone Question:"
         )
-        
+
         try:
             r = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model=settings.groq_model,
                 temperature=0.1,
-                max_tokens=100
+                max_tokens=settings.contextualize_max_tokens,
             )
             return r.choices[0].message.content.strip()
         except Exception as e:
@@ -75,13 +76,20 @@ class GenerationManager:
         )
 
     @staticmethod
-    def construct_messages(query: str, mode: str, system_prompt: str, context_text: str, university_name: str, chat_history: list = None):
+    def construct_messages(
+        query: str,
+        mode: str,
+        system_prompt: str,
+        context_text: str,
+        university_name: str,
+        chat_history: list = None,
+    ):
         messages = [{"role": "system", "content": system_prompt}]
-        
+
         if chat_history:
             for msg in chat_history:
                 messages.append(msg)
-                
+
         ref_instruction = (
             "Answer the question naturally in plain prose or bullet points with no inline labels.\n"
             "If any documents from the Context were used to answer the question, you MUST append a References section at the very end of your response exactly like this:\n\n"
@@ -107,7 +115,7 @@ class GenerationManager:
                 "Do not include a References section since no documents are provided.\n"
                 f"Question: {query}"
             )
-        else: # BLEND
+        else:  # BLEND
             user_prompt = (
                 f"{ref_instruction}\n"
                 f"Answer this question about {university_name}. Use the document context below for "
@@ -120,25 +128,32 @@ class GenerationManager:
         return messages
 
     @staticmethod
-    def generate_response(query: str, mode: str, context_text: str, university_meta: dict, stream: bool = True, chat_history: list = None):
-        university_name = university_meta.get('name', 'the university')
-        university_location = university_meta.get('location', '')
-        
+    def generate_response(
+        query: str,
+        mode: str,
+        context_text: str,
+        university_meta: dict,
+        stream: bool = True,
+        chat_history: list = None,
+    ):
+        university_name = university_meta.get("name", "the university")
+        university_location = university_meta.get("location", "")
+
         system_prompt = GenerationManager.build_system_prompt(university_name, university_location)
         messages = GenerationManager.construct_messages(query, mode, system_prompt, context_text, university_name, chat_history)
-        
+
         temperature = 0.2
         if mode == KnowledgeRouter.MODE_LLM_ONLY:
             temperature = 0.5
         elif mode == KnowledgeRouter.MODE_BLEND:
             temperature = 0.3
-            
+
         try:
             return client.chat.completions.create(
                 messages=messages,
                 model=settings.groq_model,
                 temperature=temperature,
-                stream=stream
+                stream=stream,
             )
         except Exception as e:
             print(f"Error calling Groq API: {e}")

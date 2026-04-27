@@ -10,7 +10,7 @@
         h2 { color: #2c3e50; margin-top: 0; }
         .form-group { margin-bottom: 1.5rem; }
         label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: #34495e; }
-        select, input[type="file"] { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; }
+        input[type="file"] { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; }
         .drop-zone { border: 2px dashed #cbd5e0; padding: 2rem; text-align: center; border-radius: 6px; background: #f8fafc; cursor: pointer; transition: background 0.2s; }
         .drop-zone:hover, .drop-zone.dragover { background: #e2e8f0; border-color: #94a3b8; }
         button { background: #3b82f6; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
@@ -23,18 +23,8 @@
 <body>
 
 <div class="container">
-    <h2>Ingest New Document</h2>
-    <p style="color: #64748b; font-size: 0.9em; margin-bottom: 1.5rem;">Upload a PDF to a specific knowledge base. The document will be processed in the background.</p>
-    
-    <div class="form-group">
-        <label for="university">Knowledge Base / Category</label>
-        <select id="university">
-            <option value="career-guidance">Career Guidance (Global)</option>
-            <option value="dtu">Delhi Technological University (DTU)</option>
-            <option value="nsut">Netaji Subhas University of Technology (NSUT)</option>
-            <!-- Dynamically populating from /universities API could happen here -->
-        </select>
-    </div>
+    <h2>Upload Document</h2>
+    <p style="color: #64748b; font-size: 0.9em; margin-bottom: 1.5rem;">Upload a PDF. It will be saved into the server's <code>data/</code> folder and processed in the background.</p>
 
     <div class="form-group">
         <label>Upload PDF Document</label>
@@ -47,7 +37,7 @@
     </div>
 
     <button id="uploadBtn">Upload & Process</button>
-    
+
     <div id="statusMessage" class="status"></div>
 </div>
 
@@ -59,7 +49,7 @@
     const statusMessage = document.getElementById('statusMessage');
 
     fileInput.addEventListener('change', (e) => {
-        if(e.target.files.length > 0) {
+        if (e.target.files.length > 0) {
             fileNameDisplay.textContent = "Selected: " + e.target.files[0].name;
             statusMessage.style.display = "none";
         }
@@ -73,7 +63,7 @@
     });
 
     dropZone.addEventListener('drop', (e) => {
-        if(e.dataTransfer.files.length) {
+        if (e.dataTransfer.files.length) {
             fileInput.files = e.dataTransfer.files;
             fileNameDisplay.textContent = "Selected: " + e.dataTransfer.files[0].name;
             statusMessage.style.display = "none";
@@ -81,17 +71,15 @@
     });
 
     uploadBtn.addEventListener('click', async () => {
-        if(!fileInput.files.length) {
+        if (!fileInput.files.length) {
             alert("Please select a file first!");
             return;
         }
 
         const file = fileInput.files[0];
-        const university = document.getElementById('university').value;
 
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('university', university);
 
         uploadBtn.disabled = true;
         uploadBtn.textContent = 'Uploading...';
@@ -105,7 +93,7 @@
             const data = await response.json();
 
             if (response.ok) {
-                statusMessage.textContent = "Success! " + data.message;
+                statusMessage.textContent = "Success! " + (data.message || 'Queued for ingestion.');
                 statusMessage.className = 'status success';
                 fileInput.value = '';
                 fileNameDisplay.textContent = '';

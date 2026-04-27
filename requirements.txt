@@ -10,10 +10,7 @@ pydantic
 httpx
 numpy
 langchain-text-splitters
-pytesseract
-pdf2image
-
- docling==2.91.0
+docling==2.91.0
 redis
 python-multipart
 cryptography
