@@ -37,6 +37,7 @@ data/
 logs/
 scratch*.py
 chroma_db/
+lancedb_db/
 # Render
 .render/
 
