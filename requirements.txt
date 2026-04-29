@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-chromadb
+lancedb
 sentence-transformers
 groq
 pypdf
@@ -11,6 +11,8 @@ httpx
 numpy
 langchain-text-splitters
 docling==2.91.0
+easyocr
 redis
 python-multipart
 cryptography
+boto3

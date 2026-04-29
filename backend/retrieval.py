@@ -4,10 +4,9 @@ import hashlib
 import json
 from typing import Optional, Dict, Any, List, Tuple
 
-from sentence_transformers import CrossEncoder
+from sentence_transformers import CrossEncoder, SentenceTransformer
 from rank_bm25 import BM25Okapi
-import chromadb
-from chromadb.utils import embedding_functions
+import lancedb
 
 # Optional Redis for caching HyDE
 import redis
@@ -26,7 +25,8 @@ except ModuleNotFoundError:
 
 
 class RetrievalManager:
-    _chroma_client = None
+    _lancedb_client = None
+    _embedding_model = None
     _embedding_function = None
     _reranker = None
 
@@ -35,20 +35,22 @@ class RetrievalManager:
 
     @classmethod
     def _init_models(cls):
-        if cls._chroma_client is None:
+        if cls._lancedb_client is None:
             try:
-                cls._chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
+                os.makedirs(settings.lancedb_dir, exist_ok=True)
+                cls._lancedb_client = lancedb.connect(settings.lancedb_dir)
             except Exception as e:
-                print(f"Warning: Chroma DB unavailable ({e}); retrieval will return no docs.")
-                cls._chroma_client = False  # sentinel: disabled
+                print(f"Warning: LanceDB unavailable ({e}); retrieval will return no docs.")
+                cls._lancedb_client = False  # sentinel: disabled
 
-        if cls._chroma_client is False:
+        if cls._lancedb_client is False:
             return
 
-        if not cls._embedding_function:
-            cls._embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=settings.embedding_model
-            )
+        if not cls._embedding_model:
+            cls._embedding_model = SentenceTransformer(settings.embedding_model)
+            cls._embedding_function = lambda texts: cls._embedding_model.encode(
+                texts, normalize_embeddings=True, show_progress_bar=False
+            ).tolist()
 
         if getattr(cls, "_reranker_failed", None) is None:
             cls._reranker_failed = False
@@ -77,21 +79,13 @@ class RetrievalManager:
         if cls._registry_ready:
             return
         try:
-            registry = cls._chroma_client.get_or_create_collection(
-                name="uni_registry",
-                embedding_function=cls._embedding_function,
-                metadata={"hnsw:space": "cosine"},
-            )
-
+            db = cls._lancedb_client
             universities = load_universities() or []
             if not universities:
                 cls._registry_ready = True
                 return
 
-            docs: List[str] = []
-            metas: List[Dict[str, Any]] = []
-            ids: List[str] = []
-
+            rows: List[Dict[str, Any]] = []
             for u in universities:
                 slug = u.get("slug")
                 if not slug:
@@ -110,14 +104,30 @@ class RetrievalManager:
                     f"Entrance exams: {exams}\n"
                     f"Website: {u.get('website', '')}\n"
                 )
+                rows.append({
+                    "id": slug,
+                    "vector": [],
+                    "text": doc,
+                    "slug": slug,
+                    "name": name,
+                    "location": location,
+                })
 
-                docs.append(doc)
-                metas.append({"slug": slug, "name": name, "location": location})
-                ids.append(slug)
+            if rows:
+                # Embed registry rows
+                texts = [r["text"] for r in rows]
+                vecs = cls._embedding_model.encode(texts, normalize_embeddings=True, show_progress_bar=False).tolist()
+                for row, vec in zip(rows, vecs):
+                    row["vector"] = vec
 
-            if docs:
-                # Upsert is idempotent
-                registry.upsert(documents=docs, metadatas=metas, ids=ids)
+                if "uni_registry" in db.table_names():
+                    table = db.open_table("uni_registry")
+                    (table.merge_insert("id")
+                     .when_matched_update_all()
+                     .when_not_matched_insert_all()
+                     .execute(rows))
+                else:
+                    db.create_table("uni_registry", data=rows)
 
             cls._registry_ready = True
         except Exception as e:
@@ -130,18 +140,17 @@ class RetrievalManager:
             return []
         try:
             cls._ensure_registry()
-            registry = cls._chroma_client.get_collection(
-                name="uni_registry",
-                embedding_function=cls._embedding_function,
+            db = cls._lancedb_client
+            if "uni_registry" not in db.table_names():
+                return []
+            table = db.open_table("uni_registry")
+            results = (
+                table.search(query_embedding)
+                .metric("cosine")
+                .limit(settings.global_search_top_n)
+                .to_list()
             )
-            res = registry.query(
-                query_embeddings=[query_embedding],
-                n_results=settings.global_search_top_n,
-                include=["metadatas"],
-            )
-            metas = (res.get("metadatas") or [[]])[0]
-            slugs = [m.get("slug") for m in metas if isinstance(m, dict) and m.get("slug")]
-            # unique, preserve order
+            slugs = [r.get("slug") for r in results if r.get("slug")]
             out: List[str] = []
             for s in slugs:
                 if s not in out:
@@ -151,62 +160,57 @@ class RetrievalManager:
             return []
 
     @classmethod
-    def _resolve_collections(cls, university_slug: Optional[str], query_embedding: List[float]):
-        # Single-corpus mode: always query the one shared collection.
+    def _resolve_tables(cls, university_slug: Optional[str], query_embedding: List[float]):
+        """Return list of (table_name, table) tuples to query."""
+        db = cls._lancedb_client
+
+        # Single-corpus mode: always query the one shared table.
         if settings.single_corpus:
+            tname = settings.corpus_collection
             try:
-                return [
-                    cls._chroma_client.get_or_create_collection(
-                        name=settings.corpus_collection,
-                        embedding_function=cls._embedding_function,
-                        metadata={"hnsw:space": "cosine"},
-                    )
-                ]
+                if tname not in db.table_names():
+                    db.create_table(tname, data=[])
+                return [(tname, db.open_table(tname))]
             except Exception:
                 return []
 
-        cols = []
+        tables = []
         if university_slug and university_slug != "global_search":
-            try:
-                cols.append(
-                    cls._chroma_client.get_collection(
-                        name=f"uni_{university_slug}",
-                        embedding_function=cls._embedding_function,
-                    )
-                )
-                return cols
-            except Exception:
-                return []
+            tname = f"uni_{university_slug}"
+            if tname in db.table_names():
+                try:
+                    tables.append((tname, db.open_table(tname)))
+                    return tables
+                except Exception:
+                    return []
+            return []
 
-        # Global search: first pick top-N relevant universities using the registry.
+        # Global search: pick top-N using registry.
         selected = cls._select_global_slugs(query_embedding)
         if selected:
             for slug in selected:
-                try:
-                    cols.append(
-                        cls._chroma_client.get_collection(
-                            name=f"uni_{slug}",
-                            embedding_function=cls._embedding_function,
-                        )
-                    )
-                except Exception:
-                    continue
-            if cols:
-                return cols
+                tname = f"uni_{slug}"
+                if tname in db.table_names():
+                    try:
+                        tables.append((tname, db.open_table(tname)))
+                    except Exception:
+                        continue
+            if tables:
+                return tables
 
-        # Fallback: query all uni_* collections
-        try:
-            for col in cls._chroma_client.list_collections():
-                if col.name.startswith("uni_") and col.name != "uni_registry":
-                    cols.append(
-                        cls._chroma_client.get_collection(
-                            name=col.name,
-                            embedding_function=cls._embedding_function,
-                        )
-                    )
-        except Exception:
-            pass
-        return cols
+        # Fallback: all uni_* tables
+        for tname in db.table_names():
+            if tname.startswith("uni_") and tname != "uni_registry":
+                try:
+                    tables.append((tname, db.open_table(tname)))
+                except Exception:
+                    pass
+        return tables
+
+    # Keep _resolve_collections as alias so nothing breaks if called externally
+    @classmethod
+    def _resolve_collections(cls, university_slug: Optional[str], query_embedding: List[float]):
+        return cls._resolve_tables(university_slug, query_embedding)
 
     @staticmethod
     def _should_use_hyde(query: str) -> bool:
@@ -257,16 +261,30 @@ class RetrievalManager:
         return hyde
 
     @classmethod
-    async def _dense_query_all(cls, cols, query_embedding: List[float]):
-        async def query_one(col):
-            return await asyncio.to_thread(
-                col.query,
-                query_embeddings=[query_embedding],
-                n_results=settings.dense_k,
-                include=["documents", "metadatas", "distances"],
-            )
+    async def _dense_query_all(cls, tables, query_embedding: List[float]):
+        """Query all tables and convert LanceDB results to chromadb-like format."""
+        _excluded = {"text", "vector", "id", "_distance"}
 
-        return await asyncio.gather(*[query_one(c) for c in cols])
+        async def query_one(tname_table):
+            _tname, table = tname_table
+            raw = await asyncio.to_thread(
+                lambda: (
+                    table.search(query_embedding)
+                    .metric("cosine")
+                    .limit(settings.dense_k)
+                    .to_list()
+                )
+            )
+            docs = [r["text"] for r in raw]
+            metas = [{k: v for k, v in r.items() if k not in _excluded} for r in raw]
+            dists = [r.get("_distance", 1e9) for r in raw]
+            return {
+                "documents": [docs],
+                "metadatas": [metas],
+                "distances": [dists],
+            }
+
+        return await asyncio.gather(*[query_one(t) for t in tables])
 
     @classmethod
     async def retrieve(
@@ -276,18 +294,18 @@ class RetrievalManager:
         query_embedding: Optional[List[float]] = None,
     ):
         cls._init_models()
-        if cls._chroma_client is False:
+        if cls._lancedb_client is False:
             return []
 
         if query_embedding is None:
             query_embedding = (await asyncio.to_thread(cls._embedding_function, [query]))[0]
 
-        collections_to_query = cls._resolve_collections(university_slug, query_embedding)
-        if not collections_to_query:
+        tables_to_query = cls._resolve_tables(university_slug, query_embedding)
+        if not tables_to_query:
             return []
 
         # Pass 1 dense retrieval
-        dense_results = await cls._dense_query_all(collections_to_query, query_embedding)
+        dense_results = await cls._dense_query_all(tables_to_query, query_embedding)
 
         def _extract_best_distance(results_list) -> float:
             best = None
@@ -307,7 +325,7 @@ class RetrievalManager:
             if hyde and hyde.strip():
                 hybrid_query = f"{query}\n\n{hyde.strip()}"
                 hybrid_embedding = (await asyncio.to_thread(cls._embedding_function, [hybrid_query]))[0]
-                dense_results = await cls._dense_query_all(collections_to_query, hybrid_embedding)
+                dense_results = await cls._dense_query_all(tables_to_query, hybrid_embedding)
 
         # Flatten dense results into a de-duplicated map of doc -> {meta, best_distance}
         doc_best: Dict[str, Dict[str, Any]] = {}

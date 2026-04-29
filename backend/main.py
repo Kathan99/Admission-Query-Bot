@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import asyncio
 import hashlib
 from typing import Optional
 from datetime import datetime
@@ -11,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import chromadb
+import lancedb as _lancedb
 import redis
 
 # To allow relative imports if run as a script or module
@@ -58,11 +59,23 @@ async def startup_event():
 
 
 os.makedirs(settings.log_dir, exist_ok=True)
-try:
-    chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
-except Exception as e:
-    print(f"Warning: Chroma DB unavailable ({e}); running without retrieval until re-ingestion.")
-    chroma_client = None
+
+# --- Ingestion status tracker (in-memory, single process) ---
+_ingestion_status: dict = {"state": "idle", "filename": None, "message": None}
+
+
+def _run_ingestion_with_status(fn, *args, filename: str = None, **kwargs):
+    """Wrapper: update _ingestion_status around a blocking ingestion call."""
+    global _ingestion_status
+    _ingestion_status = {"state": "processing", "filename": filename, "message": f"Processing '{filename}'…"}
+    try:
+        ok = fn(*args, **kwargs)
+        if ok:
+            _ingestion_status = {"state": "done", "filename": filename, "message": f"'{filename}' ingested successfully."}
+        else:
+            _ingestion_status = {"state": "error", "filename": filename, "message": f"Ingestion failed for '{filename}'."}
+    except Exception as exc:
+        _ingestion_status = {"state": "error", "filename": filename, "message": str(exc)}
 
 # Conversation Memory Store using Redis
 # Default to localhost for dev; in docker set REDIS_HOST=redis
@@ -138,17 +151,28 @@ async def admin_upload(
     """
     try:
         os.makedirs(settings.data_dir, exist_ok=True)
+        file_bytes = await file.read()
         file_path = os.path.join(settings.data_dir, file.filename)
         with open(file_path, "wb") as f:
-            f.write(await file.read())
+            f.write(file_bytes)
+
+        # Mirror to S3 when running in production with S3 storage enabled
+        if settings.use_s3:
+            from backend.s3_storage import upload_bytes_to_s3
+            s3_key = f"{settings.s3_prefix}{file.filename}"
+            upload_bytes_to_s3(file_bytes, s3_key)
 
         # Incremental ingestion: only process this uploaded file, do not reset collection
         if settings.single_corpus:
-            background_tasks.add_task(ingest_corpus, False, [file.filename])
+            background_tasks.add_task(
+                _run_ingestion_with_status, ingest_corpus, False, [file.filename], filename=file.filename
+            )
         else:
             # legacy behavior
             target_slug = settings.default_upload_slug
-            background_tasks.add_task(ingest_university, target_slug, False, [file.filename])
+            background_tasks.add_task(
+                _run_ingestion_with_status, ingest_university, target_slug, False, [file.filename], filename=file.filename
+            )
 
         return {
             "status": "success",
@@ -156,6 +180,11 @@ async def admin_upload(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/ingestion-status")
+def ingestion_status():
+    return JSONResponse(_ingestion_status)
 
 
 @app.post("/ingest")
@@ -182,20 +211,56 @@ def ingest(university: Optional[str] = None):
 
 @app.get("/universities/{slug}/status")
 def get_university_status(slug: str):
-    collection_name = f"uni_{slug}"
-    if chroma_client is None:
-        return {"university_slug": slug, "chunk_count": 0, "doc_count": 0, "last_ingested": None}
     try:
-        collection = chroma_client.get_collection(name=collection_name)
-        count = collection.count()
-        return {
-            "university_slug": slug,
-            "chunk_count": count,
-            "doc_count": count,
-            "last_ingested": datetime.now().isoformat(),
-        }
+        db = _lancedb.connect(settings.lancedb_dir)
+        tname = f"uni_{slug}"
+        if tname in db.table_names():
+            table = db.open_table(tname)
+            count = table.count_rows()
+            return {"university_slug": slug, "chunk_count": count, "doc_count": count, "last_ingested": datetime.now().isoformat()}
+        else:
+            return {"university_slug": slug, "chunk_count": 0, "doc_count": 0, "last_ingested": None}
     except Exception:
         return {"university_slug": slug, "chunk_count": 0, "doc_count": 0, "last_ingested": None}
+
+
+def _extract_and_filter_sources(answer_text: str, all_sources: list) -> tuple[str, list]:
+    """Strip the LLM-generated References section from answer_text and use the
+    filenames it cited to filter all_sources down to only what was actually used.
+    Returns (cleaned_answer, filtered_sources).
+    """
+    # Split on the separator the prompt instructs the LLM to use
+    parts = re.split(r"\n---\s*\n\*\*References\*\*", answer_text, maxsplit=1)
+    if len(parts) == 1:
+        # No References section found — return as-is with no sources shown
+        return answer_text.rstrip(), []
+
+    clean_answer = parts[0].rstrip()
+    refs_block = parts[1]
+
+    # Extract filenames mentioned in the References block (lines like "1. <filename> — Page N")
+    cited_filenames: set[str] = set()
+    for line in refs_block.splitlines():
+        # Match "1. filename — Page N" or "1. filename"
+        m = re.match(r"\s*\d+\.\s+(.+?)(?:\s+[—-]+\s+.*)?$", line.strip())
+        if m:
+            cited_filenames.add(m.group(1).strip())
+
+    if not cited_filenames:
+        return clean_answer, []
+
+    # Keep only sources whose filename appears in the LLM's cited set
+    filtered = [s for s in all_sources if s.get("filename", "") in cited_filenames]
+    # De-duplicate by filename
+    seen: set[str] = set()
+    deduped = []
+    for s in filtered:
+        fn = s.get("filename", "")
+        if fn not in seen:
+            seen.add(fn)
+            deduped.append(s)
+
+    return clean_answer, deduped
 
 
 @app.post("/chat")
@@ -257,17 +322,19 @@ async def chat_endpoint(request: ChatRequest):
         if cached_ctx:
             contextualized_query = cached_ctx
         else:
-            contextualized_query = GenerationManager.contextualize_query(sanitized_query, chat_history)
+            contextualized_query = await asyncio.to_thread(
+                GenerationManager.contextualize_query, sanitized_query, chat_history
+            )
             try:
                 redis_client.set(key, contextualized_query, ex=settings.contextualize_cache_ttl_seconds)
             except Exception:
                 pass
     timings["t_contextualize_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    # Embed once for cache + retrieval
+    # Embed once for cache + retrieval (off the event loop — CPU-bound)
     RetrievalManager._init_models()
     t0 = time.perf_counter()
-    query_embedding = RetrievalManager._embedding_function([contextualized_query])[0]
+    query_embedding = (await asyncio.to_thread(RetrievalManager._embedding_function, [contextualized_query]))[0]
     timings["t_embed_ms"] = int((time.perf_counter() - t0) * 1000)
 
     cached_result = semantic_cache.get(cache_slug, query_embedding)
@@ -353,6 +420,10 @@ async def chat_endpoint(request: ChatRequest):
 
     if mode == KnowledgeRouter.MODE_RAG_ONLY:
         answer_text = Guardrails.verify_numbers_in_rag(answer_text, context_text)
+
+    # Parse which sources the LLM actually cited, then strip the inline References
+    # section from the answer to avoid duplicating it in the UI's "View Sources" widget.
+    answer_text, sources = _extract_and_filter_sources(answer_text, sources)
 
     semantic_cache.set(cache_slug, query_embedding, answer_text, mode, sources)
 

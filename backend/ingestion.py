@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional, List
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import chromadb
-from chromadb.utils import embedding_functions
+import lancedb
+from sentence_transformers import SentenceTransformer
 from groq import Groq
 
 # Docling is used for all PDF extraction (native + scanned PDFs).
@@ -17,9 +17,30 @@ _DOC_CONVERTER = None
 def _get_docling_converter():
     global _DOC_CONVERTER
     if _DOC_CONVERTER is None:
-        from docling.document_converter import DocumentConverter
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import (
+            PdfPipelineOptions,
+            EasyOcrOptions,
+            TableFormerMode,
+            TableStructureOptions,
+        )
+        from docling.datamodel.base_models import InputFormat
 
-        _DOC_CONVERTER = DocumentConverter()
+        pipeline_options = PdfPipelineOptions(
+            do_ocr=True,                  # enable OCR for image-based / scanned pages
+            do_table_structure=True,      # parse tables into structured markdown, not flat text
+            table_structure_options=TableStructureOptions(mode=TableFormerMode.ACCURATE),
+            ocr_options=EasyOcrOptions(
+                force_full_page_ocr=False,  # only OCR image regions; skip native-text pages
+                lang=["en"],
+            ),
+        )
+
+        _DOC_CONVERTER = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
     return _DOC_CONVERTER
 
 # To allow relative imports if run as a script or module
@@ -181,47 +202,34 @@ def _file_sha1(path: str) -> str:
 
 
 def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]] = None) -> bool:
-    """Ingest documents directly from data/ into a single Chroma collection."""
+    """Ingest documents directly from data/ into a single LanceDB table."""
 
     data_dir = settings.data_dir
     os.makedirs(data_dir, exist_ok=True)
 
+    # In production, pull any new/updated PDFs from S3 before processing
+    if settings.use_s3:
+        from backend.s3_storage import sync_s3_to_local
+        sync_s3_to_local(data_dir, prefix=settings.s3_prefix)
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
 
-    # Initialize Chroma
+    # Initialize LanceDB and embedding model
     try:
-        chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
+        os.makedirs(settings.lancedb_dir, exist_ok=True)
+        db = lancedb.connect(settings.lancedb_dir)
     except Exception as e:
-        print(f"Failed to open Chroma DB: {e}")
+        print(f"Failed to open LanceDB: {e}")
         return False
 
-    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
+    model = SentenceTransformer(settings.embedding_model)
     collection_name = settings.corpus_collection
 
-    if reset_collection:
-        try:
-            chroma_client.delete_collection(name=collection_name)
-        except Exception:
-            pass
+    # Handle reset
+    if reset_collection and collection_name in db.table_names():
+        db.drop_table(collection_name)
 
-    try:
-        collection = chroma_client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=sentence_transformer_ef,
-            metadata={"hnsw:space": "cosine"},
-        )
-    except Exception as e:
-        print(f"Failed to create collection {collection_name}: {e}")
-        return False
-
-    documents = []
-    metadatas = []
-    ids = []
-
-    def add_chunk(chunk_text, source_meta, chunk_id: str):
-        documents.append(chunk_text)
-        metadatas.append(source_meta)
-        ids.append(chunk_id)
+    rows = []
 
     file_paths: list[str] = []
     for root, dirs, files in os.walk(data_dir):
@@ -244,6 +252,9 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
 
     corpus_slug = settings.corpus_meta_slug
 
+    eligible = [fp for fp in file_paths if fp.split(".")[-1].lower() in {"pdf", "txt", "csv"}]
+    print(f"Found {len(eligible)} file(s) to process.")
+
     for filepath in file_paths:
         file = os.path.relpath(filepath, data_dir)
         ext = file.split(".")[-1].lower()
@@ -251,6 +262,7 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
         if ext not in {"pdf", "txt", "csv"}:
             continue
 
+        print(f"Extracting text from: {file} ...", flush=True)
         extracted_pages = []
         if ext == "pdf":
             extracted_pages = extract_text_from_pdf(filepath)
@@ -261,7 +273,10 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
 
         full_text = " ".join([p["text"] for p in extracted_pages])
         if not full_text.strip():
+            print(f"  Skipping {file} (no text extracted).")
             continue
+
+        print(f"  Extracted {len(extracted_pages)} page(s) from {file}.")
 
         try:
             file_digest = _file_sha1(filepath)
@@ -273,6 +288,7 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
             print(f"Generating global context for {file} via LLM...")
             global_context = generate_global_context(file, full_text)
 
+        file_chunk_count = 0
         for page_data in extracted_pages:
             chunks = text_splitter.split_text(page_data["text"])
             for idx, chunk in enumerate(chunks):
@@ -284,30 +300,63 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
                 else:
                     enriched_chunk = f"File: {file}\nPage: {page_data['page']}\n\n{chunk}"
 
-                meta = {
+                rows.append({
+                    "id": _stable_chunk_id(corpus_slug, file, page_data["page"], idx, file_digest),
+                    "vector": [],  # filled in below
+                    "text": enriched_chunk,
                     "university_slug": corpus_slug,
                     "filename": file,
                     "page_number": page_data["page"],
                     "chunk_index": idx,
                     "file_digest": file_digest,
                     "ingested_at": datetime.now().isoformat(),
-                }
+                })
+                file_chunk_count += 1
+        print(f"  Chunked into {file_chunk_count} chunk(s). Total so far: {len(rows)}.")
 
-                add_chunk(
-                    enriched_chunk,
-                    meta,
-                    chunk_id=_stable_chunk_id(corpus_slug, file, page_data["page"], idx, file_digest),
-                )
+    if rows:
+        # Embed in batches
+        BATCH_SIZE = 256
+        all_texts = [row["text"] for row in rows]
+        all_vectors = []
+        total_batches = (len(all_texts) + BATCH_SIZE - 1) // BATCH_SIZE
+        print(f"Embedding {len(all_texts)} chunks in {total_batches} batch(es)...")
+        for i in range(0, len(all_texts), BATCH_SIZE):
+            batch_num = i // BATCH_SIZE + 1
+            print(f"  Encoding batch {batch_num}/{total_batches}...", flush=True)
+            batch_vecs = model.encode(
+                all_texts[i:i + BATCH_SIZE],
+                normalize_embeddings=True,
+                show_progress_bar=True,
+            ).tolist()
+            all_vectors.extend(batch_vecs)
+        print("Embedding complete.")
+        for row, vec in zip(rows, all_vectors):
+            row["vector"] = vec
 
-    if documents:
-        batch_size = 2000
-        for i in range(0, len(documents), batch_size):
-            collection.upsert(
-                documents=documents[i : i + batch_size],
-                metadatas=metadatas[i : i + batch_size],
-                ids=ids[i : i + batch_size],
-            )
-        print(f"Successfully ingested/upserted {len(documents)} chunks into {collection_name}.")
+        if collection_name in db.table_names():
+            # Incremental upsert
+            print(f"Upserting {len(rows)} rows into existing table '{collection_name}'...", flush=True)
+            table = db.open_table(collection_name)
+            (table.merge_insert("id")
+             .when_matched_update_all()
+             .when_not_matched_insert_all()
+             .execute(rows))
+        else:
+            print(f"Creating table '{collection_name}' with {len(rows)} rows...", flush=True)
+            table = db.create_table(collection_name, data=rows)
+
+        # Build IVF-PQ ANN index for fast vector search at query time.
+        # Without this, LanceDB falls back to brute-force scan on every query.
+        try:
+            print(f"Building ANN index for '{collection_name}' (this may take a while)...", flush=True)
+            table = db.open_table(collection_name)
+            table.create_index(metric="cosine", replace=True)
+            print(f"ANN index built for {collection_name}.")
+        except Exception as e:
+            print(f"Warning: could not build ANN index ({e}); queries will use brute-force scan.")
+
+        print(f"Successfully ingested/upserted {len(rows)} chunks into {collection_name}.")
     else:
         print(f"No documents processed for collection {collection_name}.")
 
@@ -334,40 +383,21 @@ def ingest_university(university_slug: str, reset_collection: bool = True, only_
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
 
-    # Initialize Chroma
+    # Initialize LanceDB and embedding model
     try:
-        chroma_client = chromadb.PersistentClient(path=settings.chroma_db_dir)
+        os.makedirs(settings.lancedb_dir, exist_ok=True)
+        db = lancedb.connect(settings.lancedb_dir)
     except Exception as e:
-        print(f"Failed to open Chroma DB: {e}")
+        print(f"Failed to open LanceDB: {e}")
         return False
 
-    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
+    model = SentenceTransformer(settings.embedding_model)
     collection_name = f"uni_{university_slug}"
 
-    if reset_collection:
-        try:
-            chroma_client.delete_collection(name=collection_name)
-        except Exception:
-            pass
+    if reset_collection and collection_name in db.table_names():
+        db.drop_table(collection_name)
 
-    try:
-        collection = chroma_client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=sentence_transformer_ef,
-            metadata={"hnsw:space": "cosine"},
-        )
-    except Exception as e:
-        print(f"Failed to create collection {collection_name}: {e}")
-        return False
-
-    documents = []
-    metadatas = []
-    ids = []
-
-    def add_chunk(chunk_text, source_meta, chunk_id: str):
-        documents.append(chunk_text)
-        metadatas.append(source_meta)
-        ids.append(chunk_id)
+    rows = []
 
     # Ensure registry meta chunk exists (idempotent)
     registry_text = (
@@ -381,17 +411,17 @@ def ingest_university(university_slug: str, reset_collection: bool = True, only_
         f"Admissions Phone: {uni_meta.get('admissions_phone')}\n"
         f"Website: {uni_meta.get('website')}"
     )
-    add_chunk(
-        registry_text,
-        {
-            "university_slug": university_slug,
-            "filename": "universities.json",
-            "page_number": 1,
-            "chunk_index": 0,
-            "ingested_at": datetime.now().isoformat(),
-        },
-        chunk_id=_stable_chunk_id(university_slug, "universities.json", 1, 0, "registry"),
-    )
+    rows.append({
+        "id": _stable_chunk_id(university_slug, "universities.json", 1, 0, "registry"),
+        "vector": [],  # filled in below
+        "text": registry_text,
+        "university_slug": university_slug,
+        "filename": "universities.json",
+        "page_number": 1,
+        "chunk_index": 0,
+        "file_digest": "registry",
+        "ingested_at": datetime.now().isoformat(),
+    })
 
     files = [f for f in os.listdir(uni_data_dir) if os.path.isfile(os.path.join(uni_data_dir, f))]
     if only_files:
@@ -438,30 +468,60 @@ def ingest_university(university_slug: str, reset_collection: bool = True, only_
                 else:
                     enriched_chunk = f"File: {file}\nPage: {page_data['page']}\n\n{chunk}"
 
-                meta = {
+                rows.append({
+                    "id": _stable_chunk_id(university_slug, file, page_data["page"], idx, file_digest),
+                    "vector": [],  # filled in below
+                    "text": enriched_chunk,
                     "university_slug": university_slug,
                     "filename": file,
                     "page_number": page_data["page"],
                     "chunk_index": idx,
                     "file_digest": file_digest,
                     "ingested_at": datetime.now().isoformat(),
-                }
+                })
 
-                add_chunk(
-                    enriched_chunk,
-                    meta,
-                    chunk_id=_stable_chunk_id(university_slug, file, page_data["page"], idx, file_digest),
-                )
+    if rows:
+        # Embed in batches
+        BATCH_SIZE = 256
+        all_texts = [row["text"] for row in rows]
+        all_vectors = []
+        total_batches = (len(all_texts) + BATCH_SIZE - 1) // BATCH_SIZE
+        print(f"Embedding {len(all_texts)} chunks in {total_batches} batch(es)...")
+        for i in range(0, len(all_texts), BATCH_SIZE):
+            batch_num = i // BATCH_SIZE + 1
+            print(f"  Encoding batch {batch_num}/{total_batches}...", flush=True)
+            batch_vecs = model.encode(
+                all_texts[i:i + BATCH_SIZE],
+                normalize_embeddings=True,
+                show_progress_bar=True,
+            ).tolist()
+            all_vectors.extend(batch_vecs)
+        print("Embedding complete.")
+        for row, vec in zip(rows, all_vectors):
+            row["vector"] = vec
 
-    if documents:
-        batch_size = 2000
-        for i in range(0, len(documents), batch_size):
-            collection.upsert(
-                documents=documents[i : i + batch_size],
-                metadatas=metadatas[i : i + batch_size],
-                ids=ids[i : i + batch_size],
-            )
-        print(f"Successfully ingested/upserted {len(documents)} chunks for {university_slug}.")
+        if collection_name in db.table_names():
+            # Incremental upsert
+            print(f"Upserting {len(rows)} rows into existing table '{collection_name}'...", flush=True)
+            table = db.open_table(collection_name)
+            (table.merge_insert("id")
+             .when_matched_update_all()
+             .when_not_matched_insert_all()
+             .execute(rows))
+        else:
+            print(f"Creating table '{collection_name}' with {len(rows)} rows...", flush=True)
+            table = db.create_table(collection_name, data=rows)
+
+        # Build IVF-PQ ANN index for fast vector search at query time.
+        try:
+            print(f"Building ANN index for '{collection_name}' (this may take a while)...", flush=True)
+            table = db.open_table(collection_name)
+            table.create_index(metric="cosine", replace=True)
+            print(f"ANN index built for {collection_name}.")
+        except Exception as e:
+            print(f"Warning: could not build ANN index ({e}); queries will use brute-force scan.")
+
+        print(f"Successfully ingested/upserted {len(rows)} chunks for {university_slug}.")
     else:
         print(f"No documents processed for {university_slug}.")
 

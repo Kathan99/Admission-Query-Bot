@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chatbot Ingestion Admin</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f7f6; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
         .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 500px; }
         h2 { color: #2c3e50; margin-top: 0; }
         .form-group { margin-bottom: 1.5rem; }
@@ -13,99 +13,157 @@
         input[type="file"] { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; }
         .drop-zone { border: 2px dashed #cbd5e0; padding: 2rem; text-align: center; border-radius: 6px; background: #f8fafc; cursor: pointer; transition: background 0.2s; }
         .drop-zone:hover, .drop-zone.dragover { background: #e2e8f0; border-color: #94a3b8; }
-        button { background: #3b82f6; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
-        button:hover { background: #2563eb; }
-        .status { margin-top: 1rem; padding: 1rem; border-radius: 6px; display: none; }
+        button { background: #3b82f6; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
+        button:hover:not(:disabled) { background: #2563eb; }
+        button:disabled { background: #93c5fd; cursor: not-allowed; }
+        .status { margin-top: 1rem; padding: 1rem; border-radius: 6px; display: none; font-size: 0.9em; }
         .status.success { background: #dcfce7; color: #166534; display: block; }
-        .status.error { background: #fee2e2; color: #991b1b; display: block; }
+        .status.error   { background: #fee2e2; color: #991b1b; display: block; }
+        .status.info    { background: #eff6ff; color: #1d4ed8; display: block; }
+
+        /* Spinner */
+        .spinner { width: 18px; height: 18px; border: 3px solid rgba(255,255,255,0.4); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Progress bar */
+        .progress-wrap { margin-top: 1rem; display: none; }
+        .progress-wrap.visible { display: block; }
+        .progress-label { font-size: 0.82em; color: #64748b; margin-bottom: 0.35rem; }
+        .progress-bar-track { background: #e2e8f0; border-radius: 999px; height: 8px; overflow: hidden; }
+        .progress-bar-fill { height: 100%; border-radius: 999px; background: #3b82f6; width: 0%; transition: width 0.4s ease; }
+        .progress-bar-fill.indeterminate { width: 40%; animation: slide 1.2s ease-in-out infinite; }
+        @keyframes slide { 0%{transform:translateX(-100%)} 100%{transform:translateX(350%)} }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Upload Document</h2>
-    <p style="color: #64748b; font-size: 0.9em; margin-bottom: 1.5rem;">Upload a PDF. It will be saved into the server's <code>data/</code> folder and processed in the background.</p>
+    <h2>📄 Upload Document</h2>
+    <p style="color: #64748b; font-size: 0.9em; margin-bottom: 1.5rem;">Upload a PDF. It will be saved to the server's <code>data/</code> folder and processed in the background.</p>
 
     <div class="form-group">
-        <label>Upload PDF Document</label>
+        <label>PDF Document</label>
         <input type="file" id="fileInput" accept="application/pdf" style="display: none;">
         <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-            Drag & Drop a PDF here<br>
+            Drag &amp; Drop a PDF here<br>
             <span style="font-size: 0.8em; color: #64748b;">or click to browse</span>
         </div>
         <div id="fileName" style="margin-top: 0.5rem; font-size: 0.9em; color: #3b82f6; font-weight: 500;"></div>
     </div>
 
-    <button id="uploadBtn">Upload & Process</button>
+    <button id="uploadBtn">Upload &amp; Process</button>
+
+    <div class="progress-wrap" id="progressWrap">
+        <div class="progress-label" id="progressLabel">Uploading file…</div>
+        <div class="progress-bar-track">
+            <div class="progress-bar-fill indeterminate" id="progressFill"></div>
+        </div>
+    </div>
 
     <div id="statusMessage" class="status"></div>
 </div>
 
 <script>
-    const fileInput = document.getElementById('fileInput');
-    const dropZone = document.getElementById('dropZone');
+    const fileInput     = document.getElementById('fileInput');
+    const dropZone      = document.getElementById('dropZone');
     const fileNameDisplay = document.getElementById('fileName');
-    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadBtn     = document.getElementById('uploadBtn');
     const statusMessage = document.getElementById('statusMessage');
+    const progressWrap  = document.getElementById('progressWrap');
+    const progressLabel = document.getElementById('progressLabel');
+    const progressFill  = document.getElementById('progressFill');
+
+    let pollTimer = null;
 
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
-            fileNameDisplay.textContent = "Selected: " + e.target.files[0].name;
-            statusMessage.style.display = "none";
+            fileNameDisplay.textContent = 'Selected: ' + e.target.files[0].name;
+            statusMessage.className = 'status';
         }
     });
 
-    ['dragover', 'dragenter'].forEach(eventName => {
-        dropZone.addEventListener(eventName, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }, false)
+    ['dragover', 'dragenter'].forEach(ev => {
+        dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }, false);
     });
-    ['dragleave', 'dragend', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); }, false)
+    ['dragleave', 'dragend', 'drop'].forEach(ev => {
+        dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); }, false);
     });
-
     dropZone.addEventListener('drop', (e) => {
         if (e.dataTransfer.files.length) {
             fileInput.files = e.dataTransfer.files;
-            fileNameDisplay.textContent = "Selected: " + e.dataTransfer.files[0].name;
-            statusMessage.style.display = "none";
+            fileNameDisplay.textContent = 'Selected: ' + e.dataTransfer.files[0].name;
+            statusMessage.className = 'status';
         }
     });
 
+    function setLoading(isLoading, label = 'Uploading file…') {
+        uploadBtn.disabled = isLoading;
+        uploadBtn.innerHTML = isLoading
+            ? `<span class="spinner"></span> ${label}`
+            : 'Upload &amp; Process';
+        progressWrap.classList.toggle('visible', isLoading);
+        if (isLoading) progressLabel.textContent = label;
+    }
+
+    function showStatus(type, msg) {
+        statusMessage.textContent = msg;
+        statusMessage.className = 'status ' + type;
+    }
+
+    async function pollIngestionStatus() {
+        try {
+            const res = await fetch('/api/admin/ingestion-status');
+            const data = await res.json();
+
+            if (data.state === 'processing') {
+                setLoading(true, `Processing '${data.filename}'…`);
+                pollTimer = setTimeout(pollIngestionStatus, 2000);
+
+            } else if (data.state === 'done') {
+                setLoading(false);
+                showStatus('success', '✅ ' + (data.message || 'Ingestion complete.'));
+                fileInput.value = '';
+                fileNameDisplay.textContent = '';
+
+            } else if (data.state === 'error') {
+                setLoading(false);
+                showStatus('error', '❌ ' + (data.message || 'Ingestion failed.'));
+            }
+        } catch (e) {
+            setLoading(false);
+            showStatus('error', '❌ Could not reach server: ' + e.message);
+        }
+    }
+
     uploadBtn.addEventListener('click', async () => {
         if (!fileInput.files.length) {
-            alert("Please select a file first!");
+            alert('Please select a file first!');
             return;
         }
 
+        clearTimeout(pollTimer);
         const file = fileInput.files[0];
-
         const formData = new FormData();
         formData.append('file', file);
 
-        uploadBtn.disabled = true;
-        uploadBtn.textContent = 'Uploading...';
+        setLoading(true, 'Uploading file…');
         statusMessage.className = 'status';
 
         try {
-            const response = await fetch('/api/admin/upload', {
-                method: 'POST',
-                body: formData
-            });
+            const response = await fetch('/api/admin/upload', { method: 'POST', body: formData });
             const data = await response.json();
 
             if (response.ok) {
-                statusMessage.textContent = "Success! " + (data.message || 'Queued for ingestion.');
-                statusMessage.className = 'status success';
-                fileInput.value = '';
-                fileNameDisplay.textContent = '';
+                setLoading(true, `Processing '${file.name}'…`);
+                showStatus('info', '⏳ File uploaded. Waiting for ingestion to complete…');
+                // Start polling ingestion status
+                pollTimer = setTimeout(pollIngestionStatus, 1500);
             } else {
                 throw new Error(data.detail || 'Upload failed');
             }
         } catch (error) {
-            statusMessage.textContent = "Error: " + error.message;
-            statusMessage.className = 'status error';
-        } finally {
-            uploadBtn.disabled = false;
-            uploadBtn.textContent = 'Upload & Process';
+            setLoading(false);
+            showStatus('error', '❌ ' + error.message);
         }
     });
 </script>

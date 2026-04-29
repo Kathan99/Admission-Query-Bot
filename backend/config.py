@@ -29,14 +29,14 @@ class Settings(BaseSettings):
     enable_global_context: bool = False  # ingestion-time LLM summary; keep off for speed
 
     # Retrieval tuning
-    dense_k: int = 30
+    dense_k: int = 15          # was 30; fetch fewer candidates — most were discarded anyway
     bm25_k: int = 10
     fused_k: int = 10
     final_k: int = 5
     global_search_top_n: int = 3
 
     # HyDE gating/caching
-    hyde_trigger_distance: float = 0.35  # cosine distance: lower is better
+    hyde_trigger_distance: float = 0.28  # was 0.35; only run HyDE on truly weak retrievals
     hyde_max_tokens: int = 150
     hyde_cache_ttl_seconds: int = 3600
 
@@ -44,8 +44,17 @@ class Settings(BaseSettings):
     contextualize_max_tokens: int = 100
     contextualize_cache_ttl_seconds: int = 86400
 
+    # AWS S3 — set USE_S3=true to store/fetch PDFs from S3 in production
+    use_s3: bool = os.getenv("USE_S3", "false").strip().lower() in {"1", "true", "yes"}
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
+    s3_bucket: str = os.getenv("S3_BUCKET", "")
+    s3_prefix: str = os.getenv("S3_PREFIX", "pdfs/")
+
     storage_dir: str = os.getenv("STORAGE_DIR", os.path.dirname(os.path.dirname(__file__)))
     chroma_db_dir: str = os.path.join(storage_dir, "chroma_db")
+    lancedb_dir: str = os.path.join(storage_dir, "lancedb_db")
     data_dir: str = os.path.join(storage_dir, "data")
     log_dir: str = os.path.join(storage_dir, "logs")
     universities_json: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "universities.json")

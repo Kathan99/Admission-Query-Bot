@@ -15,13 +15,21 @@ services:
       - redis
     ports:
       - "8000:8000"
+    environment:
+      # AWS S3 — required when USE_S3=true
+      - USE_S3=${USE_S3:-false}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - S3_BUCKET=${S3_BUCKET:-}
+      - S3_PREFIX=${S3_PREFIX:-pdfs/}
     volumes:
-      # Map the local ChromaDB storage directory into the container to prevent database resets on updates
-      - ./chroma_db:/app/chroma_db
-      
-      # Bind the data folder so you can ingest new PDFs easily
+      # LanceDB vector store (persisted across restarts)
+      - ./lancedb_db:/app/lancedb_db
+
+      # Local data folder — used for dev; in production PDFs are pulled from S3
       - ./data:/app/data
-      
+
       # Inject environment variables securely
       - .env:/app/.env
     restart: unless-stopped
