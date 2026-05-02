@@ -60,16 +60,23 @@ async def startup_event():
 
 os.makedirs(settings.log_dir, exist_ok=True)
 
+import concurrent.futures
+
 # --- Ingestion status tracker (in-memory, single process) ---
 _ingestion_status: dict = {"state": "idle", "filename": None, "message": None}
 
+# Use a process pool for heavy ingestion tasks so PyTorch uses all CPU cores
+_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
 
-def _run_ingestion_with_status(fn, *args, filename: str = None, **kwargs):
+async def _run_ingestion_with_status(fn, *args, filename: str = None, **kwargs):
     """Wrapper: update _ingestion_status around a blocking ingestion call."""
     global _ingestion_status
     _ingestion_status = {"state": "processing", "filename": filename, "message": f"Processing '{filename}'…"}
     try:
-        ok = fn(*args, **kwargs)
+        from functools import partial
+        func = partial(fn, *args, **kwargs)
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(_process_pool, func)
         if ok:
             _ingestion_status = {"state": "done", "filename": filename, "message": f"'{filename}' ingested successfully."}
         else:

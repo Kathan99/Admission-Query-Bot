@@ -42,7 +42,6 @@ def _get_docling_converter():
             }
         )
     return _DOC_CONVERTER
-
 # To allow relative imports if run as a script or module
 try:
     from backend.config import settings, load_universities

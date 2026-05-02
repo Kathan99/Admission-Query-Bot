@@ -1,7 +1,10 @@
 import os
 import json
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Load .env into os.environ so external libraries like huggingface_hub can see it
+load_dotenv()
 
 class Settings(BaseSettings):
     # Optional: Hugging Face token for Docling/HF downloads (also read directly from env by HF Hub).
