@@ -10,38 +10,10 @@ import lancedb
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 
-# Docling is used for all PDF extraction (native + scanned PDFs).
-# Import lazily to avoid paying import/model init cost unless ingestion runs.
-_DOC_CONVERTER = None
-
-def _get_docling_converter():
-    global _DOC_CONVERTER
-    if _DOC_CONVERTER is None:
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-        from docling.datamodel.pipeline_options import (
-            PdfPipelineOptions,
-            EasyOcrOptions,
-            TableFormerMode,
-            TableStructureOptions,
-        )
-        from docling.datamodel.base_models import InputFormat
-
-        pipeline_options = PdfPipelineOptions(
-            do_ocr=True,                  # enable OCR for image-based / scanned pages
-            do_table_structure=True,      # parse tables into structured markdown, not flat text
-            table_structure_options=TableStructureOptions(mode=TableFormerMode.ACCURATE),
-            ocr_options=EasyOcrOptions(
-                force_full_page_ocr=False,  # only OCR image regions; skip native-text pages
-                lang=["en"],
-            ),
-        )
-
-        _DOC_CONVERTER = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-            }
-        )
-    return _DOC_CONVERTER
+# PDF extraction uses a fast two-tier approach:
+#   1. pypdfium2  — near-instant native text extraction (already in venv as a transitive dep)
+#   2. pytesseract — Tesseract 5 OCR, called ONLY for pages where native text is empty/minimal
+# This avoids the 4–12 hour Docling+EasyOCR cost on CPU-only AWS instances.
 # To allow relative imports if run as a script or module
 try:
     from backend.config import settings, load_universities
@@ -53,86 +25,64 @@ except ModuleNotFoundError:
 
 
 def extract_text_from_pdf(filepath: str):
-    """Extract per-page text from a PDF using Docling.
+    """Fast two-tier PDF extractor.
+
+    Tier 1 (pypdfium2) — native text, runs in milliseconds per page.
+    Tier 2 (pytesseract) — Tesseract 5 OCR, only triggered when a page yields
+    fewer than OCR_THRESHOLD characters (i.e. it's a scanned/image page).
 
     Returns: [{"text": str, "page": int}, ...]
-
-    We preserve page numbers using Docling provenance (prov.page_no) for better citations.
     """
+    # Threshold below which a page is considered image-only / scanned.
+    OCR_THRESHOLD = 50
 
     try:
-        converter = _get_docling_converter()
-        doc = converter.convert(filepath).document
-    except Exception as e:
-        print(f"Docling failed to read PDF {filepath}: {e}")
+        import pypdfium2 as pdfium
+    except ImportError:
+        print("pypdfium2 not available — install it with: pip install pypdfium2")
         return []
-
-    page_chunks: dict[int, list[str]] = {}
 
     try:
-        for item, _level in doc.iterate_items():
-            prov = getattr(item, "prov", None)
-            if not prov:
-                continue
-
-            page_no = getattr(prov[0], "page_no", None)
-            if not page_no:
-                continue
-
-            piece = None
-            if hasattr(item, "text") and isinstance(getattr(item, "text"), str):
-                piece = item.text
-            elif hasattr(item, "export_to_markdown"):
-                try:
-                    import inspect
-
-                    sig = inspect.signature(item.export_to_markdown)
-                    if "doc" in sig.parameters:
-                        piece = item.export_to_markdown(doc=doc)
-                    else:
-                        piece = item.export_to_markdown()
-                except Exception:
-                    piece = None
-
-            if not piece:
-                continue
-
-            piece = piece.strip()
-            if not piece:
-                continue
-
-            pn = int(page_no)
-            page_chunks.setdefault(pn, []).append(piece)
-
+        doc = pdfium.PdfDocument(filepath)
     except Exception as e:
-        print(f"Docling extraction failed for {filepath}: {e}")
+        print(f"pypdfium2 failed to open {filepath}: {e}")
         return []
 
-    text_data: list[dict] = []
-    for pn in sorted(page_chunks.keys()):
-        # De-dupe while preserving order (Docling can emit repeated fragments).
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for s in page_chunks[pn]:
-            if s in seen:
-                continue
-            seen.add(s)
-            deduped.append(s)
+    results: list[dict] = []
+    n_ocr = 0
 
-        joined = "\n".join(deduped).strip()
-        if joined:
-            text_data.append({"text": joined, "page": pn})
-
-    # As a safety net, if provenance iteration produced nothing, fall back to whole-doc markdown.
-    if not text_data:
+    for page_no, page in enumerate(doc, start=1):
         try:
-            md = doc.export_to_markdown().strip()
-            if md:
-                return [{"text": md, "page": 1}]
+            text = page.get_textpage().get_text_range().strip()
         except Exception:
-            pass
+            text = ""
 
-    return text_data
+        if len(text) >= OCR_THRESHOLD:
+            # ✅ Fast path: real native text found
+            results.append({"text": text, "page": page_no})
+        elif settings.enable_ocr_fallback:
+            # 🔄 Slow path: page looks scanned — run Tesseract OCR
+            try:
+                import pytesseract
+                from PIL import Image  # noqa: F401 — ensure Pillow is available
+
+                # Render at 2× scale for better OCR accuracy (150 DPI → 300 DPI equivalent)
+                bitmap = page.render(scale=2.0)
+                pil_img = bitmap.to_pil()
+                ocr_text = pytesseract.image_to_string(pil_img, lang="eng").strip()
+                if ocr_text:
+                    results.append({"text": ocr_text, "page": page_no})
+                n_ocr += 1
+            except Exception as e:
+                print(f"  OCR failed for page {page_no} of {filepath}: {e}")
+        # If OCR is disabled and page has no native text, silently skip it.
+
+    doc.close()
+
+    if n_ocr:
+        print(f"  {n_ocr} page(s) were image-only and processed via Tesseract OCR.")
+
+    return results
 
 
 def extract_text_from_txt(filepath):

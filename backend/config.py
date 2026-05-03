@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     enable_hyde: bool = True
     enable_contextualize: bool = True
     enable_global_context: bool = False  # ingestion-time LLM summary; keep off for speed
+    # OCR fallback: Tesseract is called only for image-only pages.
+    # Set ENABLE_OCR_FALLBACK=false to use only native text (fastest, fine for digital PDFs).
+    enable_ocr_fallback: bool = os.getenv("ENABLE_OCR_FALLBACK", "true").strip().lower() in {"1", "true", "yes"}
 
     # Retrieval tuning
     dense_k: int = 15          # was 30; fetch fewer candidates — most were discarded anyway

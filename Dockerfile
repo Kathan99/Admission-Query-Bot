@@ -2,13 +2,14 @@
 FROM python:3.11-slim
 
 # Install system dependencies
-# - build-essential: Needed for some C-based python packages
-# - libgomp1/libglib2.0-0/libgl1: common runtime deps for ML/OCR stacks used by Docling
+# - build-essential: needed for some C-based Python packages
+# - tesseract-ocr + tesseract-ocr-eng: Tesseract OCR engine for scanned-page fallback
+# - libglib2.0-0: common runtime dep for image processing libs
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libgomp1 \
     libglib2.0-0 \
-    libgl1 \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory

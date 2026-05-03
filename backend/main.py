@@ -60,13 +60,16 @@ async def startup_event():
 
 os.makedirs(settings.log_dir, exist_ok=True)
 
+import multiprocessing as mp
 import concurrent.futures
 
 # --- Ingestion status tracker (in-memory, single process) ---
 _ingestion_status: dict = {"state": "idle", "filename": None, "message": None}
 
 # Use a process pool for heavy ingestion tasks so PyTorch uses all CPU cores
-_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+# Force 'spawn' context to avoid PyTorch/CUDA deadlocks on Linux (which defaults to 'fork')
+_mp_context = mp.get_context("spawn")
+_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=_mp_context)
 
 async def _run_ingestion_with_status(fn, *args, filename: str = None, **kwargs):
     """Wrapper: update _ingestion_status around a blocking ingestion call."""
