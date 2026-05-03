@@ -14,6 +14,7 @@ from groq import Groq
 #   1. pypdfium2  — near-instant native text extraction (already in venv as a transitive dep)
 #   2. pytesseract — Tesseract 5 OCR, called ONLY for pages where native text is empty/minimal
 # This avoids the 4–12 hour Docling+EasyOCR cost on CPU-only AWS instances.
+
 # To allow relative imports if run as a script or module
 try:
     from backend.config import settings, load_universities
@@ -24,16 +25,42 @@ except ModuleNotFoundError:
     from backend.config import settings, load_universities
 
 
+def _ocr_page_worker(filepath: str, page_no: int, scale: float = 2.0) -> str:
+    """Module-level OCR worker — must be at top-level so ProcessPoolExecutor can pickle it.
+
+    Opens its own PdfDocument handle (not thread/process-safe to share one document
+    across workers) and runs Tesseract on the rendered page image.
+
+    Returns: extracted text string (empty string on failure).
+    """
+    try:
+        import pypdfium2 as pdfium
+        import pytesseract
+
+        doc = pdfium.PdfDocument(filepath)
+        page = doc[page_no - 1]           # PdfDocument is 0-indexed
+        bitmap = page.render(scale=scale)
+        pil_img = bitmap.to_pil()
+        doc.close()
+        return pytesseract.image_to_string(pil_img, lang="eng").strip()
+    except Exception as e:
+        print(f"  [OCR worker] page {page_no} failed: {e}")
+        return ""
+
+
 def extract_text_from_pdf(filepath: str):
-    """Fast two-tier PDF extractor.
+    """Fast two-tier PDF extractor with parallel OCR.
 
     Tier 1 (pypdfium2) — native text, runs in milliseconds per page.
     Tier 2 (pytesseract) — Tesseract 5 OCR, only triggered when a page yields
     fewer than OCR_THRESHOLD characters (i.e. it's a scanned/image page).
+    Scanned pages are processed in parallel to maximise CPU utilisation.
 
     Returns: [{"text": str, "page": int}, ...]
     """
-    # Threshold below which a page is considered image-only / scanned.
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    # Below this char count a page is treated as image-only / scanned.
     OCR_THRESHOLD = 50
 
     try:
@@ -48,41 +75,51 @@ def extract_text_from_pdf(filepath: str):
         print(f"pypdfium2 failed to open {filepath}: {e}")
         return []
 
-    results: list[dict] = []
-    n_ocr = 0
+    # --- Pass 1: quick native-text extraction (single-threaded, near-instant) ---
+    native_results: dict[int, str] = {}   # page_no -> text
+    scanned_pages: list[int] = []         # page indices that need OCR
 
     for page_no, page in enumerate(doc, start=1):
         try:
             text = page.get_textpage().get_text_range().strip()
         except Exception:
             text = ""
-
         if len(text) >= OCR_THRESHOLD:
-            # ✅ Fast path: real native text found
-            results.append({"text": text, "page": page_no})
-        elif settings.enable_ocr_fallback:
-            # 🔄 Slow path: page looks scanned — run Tesseract OCR
-            try:
-                import pytesseract
-                from PIL import Image  # noqa: F401 — ensure Pillow is available
+            native_results[page_no] = text
+        else:
+            scanned_pages.append(page_no)  # 1-indexed
 
-                # Render at 2× scale for better OCR accuracy (150 DPI → 300 DPI equivalent)
-                bitmap = page.render(scale=2.0)
-                pil_img = bitmap.to_pil()
-                ocr_text = pytesseract.image_to_string(pil_img, lang="eng").strip()
+    doc.close()   # Close before parallelism to avoid shared-state issues with pypdfium2
+
+    results: list[dict] = list(
+        {"text": t, "page": p} for p, t in native_results.items()
+    )
+
+    # --- Pass 2: parallel OCR for scanned pages ---
+    if scanned_pages and settings.enable_ocr_fallback:
+        scale = settings.ocr_scale
+        n_workers = settings.ocr_threads
+
+        print(f"  Running parallel OCR on {len(scanned_pages)} scanned page(s) "
+              f"using {n_workers} worker(s)…")
+
+        # ProcessPoolExecutor gives true CPU parallelism (bypasses GIL).
+        # _ocr_page_worker is module-level so it can be pickled by multiprocessing.
+        import multiprocessing as _mp
+        _ctx = _mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=_ctx) as pool:
+            futures = {
+                pool.submit(_ocr_page_worker, filepath, pno, scale): pno
+                for pno in scanned_pages
+            }
+            for fut in as_completed(futures):
+                ocr_text = fut.result()
                 if ocr_text:
-                    results.append({"text": ocr_text, "page": page_no})
-                n_ocr += 1
-            except Exception as e:
-                print(f"  OCR failed for page {page_no} of {filepath}: {e}")
-        # If OCR is disabled and page has no native text, silently skip it.
+                    results.append({"text": ocr_text, "page": futures[fut]})
 
-    doc.close()
+        print(f"  OCR complete. {len(scanned_pages)} page(s) processed.")
 
-    if n_ocr:
-        print(f"  {n_ocr} page(s) were image-only and processed via Tesseract OCR.")
-
-    return results
+    return sorted(results, key=lambda r: r["page"])
 
 
 def extract_text_from_txt(filepath):

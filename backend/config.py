@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # OCR fallback: Tesseract is called only for image-only pages.
     # Set ENABLE_OCR_FALLBACK=false to use only native text (fastest, fine for digital PDFs).
     enable_ocr_fallback: bool = os.getenv("ENABLE_OCR_FALLBACK", "true").strip().lower() in {"1", "true", "yes"}
+    # Number of parallel Tesseract threads for scanned pages. Increase on multi-core AWS instances.
+    ocr_threads: int = int(os.getenv("OCR_THREADS", "4"))
+    # Render scale for OCR (2.0 = ~300 DPI — good balance of accuracy and speed).
+    ocr_scale: float = float(os.getenv("OCR_SCALE", "2.0"))
 
     # Retrieval tuning
     dense_k: int = 15          # was 30; fetch fewer candidates — most were discarded anyway
