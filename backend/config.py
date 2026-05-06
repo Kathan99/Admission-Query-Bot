@@ -75,6 +75,13 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+if settings.use_s3 and settings.s3_bucket:
+    _prefix = settings.s3_prefix.strip("/")
+    if _prefix:
+        settings.lancedb_dir = f"s3://{settings.s3_bucket}/{_prefix}/lancedb_db"
+    else:
+        settings.lancedb_dir = f"s3://{settings.s3_bucket}/lancedb_db"
+
 
 def load_universities():
     if os.path.exists(settings.universities_json):

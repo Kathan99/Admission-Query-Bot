@@ -202,7 +202,8 @@ def ingest_corpus(reset_collection: bool = True, only_files: Optional[List[str]]
 
     # Initialize LanceDB and embedding model
     try:
-        os.makedirs(settings.lancedb_dir, exist_ok=True)
+        if not settings.lancedb_dir.startswith("s3://"):
+            os.makedirs(settings.lancedb_dir, exist_ok=True)
         db = lancedb.connect(settings.lancedb_dir)
     except Exception as e:
         print(f"Failed to open LanceDB: {e}")
@@ -371,7 +372,8 @@ def ingest_university(university_slug: str, reset_collection: bool = True, only_
 
     # Initialize LanceDB and embedding model
     try:
-        os.makedirs(settings.lancedb_dir, exist_ok=True)
+        if not settings.lancedb_dir.startswith("s3://"):
+            os.makedirs(settings.lancedb_dir, exist_ok=True)
         db = lancedb.connect(settings.lancedb_dir)
     except Exception as e:
         print(f"Failed to open LanceDB: {e}")

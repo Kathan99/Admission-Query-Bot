@@ -37,7 +37,8 @@ class RetrievalManager:
     def _init_models(cls):
         if cls._lancedb_client is None:
             try:
-                os.makedirs(settings.lancedb_dir, exist_ok=True)
+                if not settings.lancedb_dir.startswith("s3://"):
+                    os.makedirs(settings.lancedb_dir, exist_ok=True)
                 cls._lancedb_client = lancedb.connect(settings.lancedb_dir)
             except Exception as e:
                 print(f"Warning: LanceDB unavailable ({e}); retrieval will return no docs.")
