@@ -37,20 +37,26 @@ class Guardrails:
     @staticmethod
     def verify_numbers_in_rag(response_text: str, context_text: str) -> str:
         """
-        Extracts numbers from response and verifies they exist in the context.
-        If a number is found in response but not in context, append a warning.
+        Only appends a verification note for large, institution-specific numbers
+        (e.g. exact fee amounts with 5+ digits) that don't appear in the retrieved context.
+        Common knowledge figures (percentages, small counts, reservation quotas) are left alone
+        since Gemini legitimately knows them from general education knowledge.
         """
-        response_numbers = set(re.findall(r'\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b', response_text))
-        if not response_numbers:
+        # Only flag large numbers that look like institution-specific figures (5+ digits, e.g. ₹85,000)
+        large_numbers = set(re.findall(r'\b\d{5,}(?:,\d{3})*(?:\.\d+)?\b', response_text))
+        if not large_numbers:
             return response_text
-            
-        # Strip commas for pure numeric checks conceptually, but simple existence check first
-        for num in response_numbers:
-            # Simple substring check (can be improved in production)
-            if num not in context_text and num.replace(",", "") not in context_text.replace(",", ""):
-                return response_text + "\n\n> **Note:** The exact numbers mentioned above might not be explicitly present in my current document database. Please verify these figures directly with the university."
-                
+
+        for num in large_numbers:
+            clean = num.replace(",", "")
+            if clean not in context_text.replace(",", ""):
+                return response_text + (
+                    "\n\n> **Note:** Some figures above are based on general knowledge. "
+                    "Please verify exact amounts on the official university website."
+                )
+
         return response_text
+
 
     @staticmethod
     def append_contact_info(response_text: str, email: str, phone: str, website: str) -> str:

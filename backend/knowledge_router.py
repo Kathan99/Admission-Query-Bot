@@ -4,18 +4,21 @@ class KnowledgeRouter:
     MODE_RAG_ONLY = "RAG_ONLY"
     MODE_LLM_ONLY = "LLM_ONLY"
     MODE_BLEND = "BLEND"
-    
-    RAG_ONLY_KEYWORDS = [
-        "seat", "seats", "fee", "fees", "cutoff", "cut-off", "rank", 
-        "deadline", "scholarship", "hostel", "mess", "syllabus"
+
+    # Keywords that signal the question asks for very specific document facts.
+    # For these we still prefer RAG_ONLY so the LLM is pushed to cite the doc first,
+    # but the new prompts will fall back to general knowledge if the doc doesn't have it.
+    RAG_PRIORITY_KEYWORDS = [
+        "seat", "seats", "fee", "fees", "cutoff", "cut-off", "rank",
+        "deadline", "scholarship", "hostel", "mess", "syllabus", "intake",
+        "placement", "placement record", "stipend",
     ]
-    
+
     @staticmethod
     def contains_specific_facts_query(query: str) -> bool:
         query_lower = query.lower()
-        if any(kw in query_lower for kw in KnowledgeRouter.RAG_ONLY_KEYWORDS):
+        if any(kw in query_lower for kw in KnowledgeRouter.RAG_PRIORITY_KEYWORDS):
             return True
-        # Check for numeric references like "how many", "amount", percentages, dates
         if re.search(r'\bhow many\b|\bamount\b|\bexact\b', query_lower):
             return True
         return False
@@ -23,21 +26,20 @@ class KnowledgeRouter:
     @staticmethod
     def route(query: str, top_rerank_score: float, has_docs: bool = True) -> str:
         """
-        Determines the routing mode based on the max score from provided documents
-        and query properties.
+        Determines the routing mode.
+
+        - No docs available  → LLM_ONLY (Gemini answers from its own knowledge)
+        - Specific-fact query (fees, seats, cutoffs…) + docs → RAG_ONLY
+          (prompt instructs LLM to cite doc first, fall back to knowledge if not found)
+        - Everything else    → BLEND (docs + general knowledge, always a full answer)
         """
         if not has_docs:
+            # No document chunks retrieved — Gemini answers from its own knowledge
             return KnowledgeRouter.MODE_LLM_ONLY
-            
-        needs_specific_facts = KnowledgeRouter.contains_specific_facts_query(query)
 
-        # We used to check `top_rerank_score < 0.40` for LLM_ONLY, but CrossEncoders output raw logits 
-        # (often negative, like -8.0 to +10.0), which caused us to inadvertently discard perfectly good context!
-        
-        # If there are documents, we should almost always default to BLEND or RAG_ONLY, and let the LLM
-        # decide if the provided context actually contains the answer.
-
-        if needs_specific_facts:
+        if KnowledgeRouter.contains_specific_facts_query(query):
+            # Push LLM to cite the document for hard facts, but still allow knowledge fallback
             return KnowledgeRouter.MODE_RAG_ONLY
 
+        # Default: blend document context with Gemini's broad education knowledge
         return KnowledgeRouter.MODE_BLEND

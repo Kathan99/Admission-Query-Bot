@@ -24,6 +24,7 @@ try:
     from backend.generation import GenerationManager
     from backend.cache import semantic_cache
     from backend.guardrails import Guardrails
+    from backend.mongo_logger import MongoLogger
 except ModuleNotFoundError:
     import sys
 
@@ -35,6 +36,7 @@ except ModuleNotFoundError:
     from backend.generation import GenerationManager
     from backend.cache import semantic_cache
     from backend.guardrails import Guardrails
+    from backend.mongo_logger import MongoLogger
 
 app = FastAPI(title="Multi-University RAG Chatbot")
 
@@ -363,6 +365,24 @@ async def chat_endpoint(request: ChatRequest):
                 **timings,
             }
         )
+        # Also log cache hits to MongoDB (fire-and-forget in background thread)
+        asyncio.create_task(asyncio.to_thread(
+            MongoLogger.log,
+            session_id=request.session_id,
+            original_query=request.query,
+            sanitized_query=sanitized_query,
+            contextualized_query=contextualized_query,
+            answer=cached_result["response"],
+            mode=cached_result["mode"],
+            university_slug=cache_slug,
+            sources=cached_result["sources"],
+            retrieved_chunk_count=0,
+            top_rerank_score=None,
+            cache_hit=True,
+            tokens_used=0,
+            latency_ms=latency_ms,
+            timings=timings,
+        ))
         return JSONResponse(
             {
                 "answer": cached_result["response"],
@@ -426,7 +446,7 @@ async def chat_endpoint(request: ChatRequest):
     )
     timings["t_generate_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    answer_text = completion.choices[0].message.content
+    answer_text = completion.text
 
     if mode == KnowledgeRouter.MODE_RAG_ONLY:
         answer_text = Guardrails.verify_numbers_in_rag(answer_text, context_text)
@@ -438,7 +458,7 @@ async def chat_endpoint(request: ChatRequest):
     semantic_cache.set(cache_slug, query_embedding, answer_text, mode, sources)
 
     latency_ms = int((time.perf_counter() - t_start) * 1000)
-    tokens_used = completion.usage.total_tokens if completion.usage else 0
+    tokens_used = completion.usage_metadata.total_token_count if completion.usage_metadata else 0
 
     log_trace(
         {
@@ -455,6 +475,24 @@ async def chat_endpoint(request: ChatRequest):
             **timings,
         }
     )
+    # Log to MongoDB Atlas (fire-and-forget in background thread)
+    asyncio.create_task(asyncio.to_thread(
+        MongoLogger.log,
+        session_id=request.session_id,
+        original_query=request.query,
+        sanitized_query=sanitized_query,
+        contextualized_query=contextualized_query,
+        answer=answer_text,
+        mode=mode,
+        university_slug=cache_slug,
+        sources=sources,
+        retrieved_chunk_count=len(chunks),
+        top_rerank_score=float(top_rerank_score) if top_rerank_score else None,
+        cache_hit=False,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+        timings=timings,
+    ))
 
     # Update session memory (max 6 turns / 3 pairs)
     chat_history.append({"role": "user", "content": sanitized_query})

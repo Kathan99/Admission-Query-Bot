@@ -1,19 +1,48 @@
-fastapi
-uvicorn
-lancedb
-sentence-transformers
-groq
-pypdf
-rank_bm25
-python-dotenv
-pydantic
-httpx
-numpy
-langchain-text-splitters
-pypdfium2
-pytesseract
-Pillow
-redis
-python-multipart
-cryptography
+# Core API
+fastapi==0.136.1
+uvicorn==0.46.0
+
+# Vector store
+lancedb==0.30.2
+
+# Embeddings & reranking
+sentence-transformers==5.4.1
+
+# LLM — Google Gemini
+google-genai==2.6.0
+
+# PDF processing
+pypdf==6.10.2
+pypdfium2==5.7.1
+pytesseract==0.3.13
+Pillow==12.2.0
+
+# Text splitting
+langchain-text-splitters==1.1.2
+
+# BM25 retrieval
+rank-bm25==0.2.2
+
+# Config & env
+python-dotenv==1.2.2
+pydantic==2.13.3
+pydantic-settings==2.14.0
+
+# HTTP client
+httpx==0.28.1
+
+# Numerics
+numpy==2.4.4
+
+# Session memory
+redis==7.4.0
+
+# MongoDB Atlas logging
+pymongo==4.17.0
+
+# File upload & security
+python-multipart==0.0.26
+cryptography==47.0.0
+
+# AWS S3 (optional — only needed when USE_S3=true)
 boto3

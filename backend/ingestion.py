@@ -8,7 +8,8 @@ from typing import Optional, List
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import lancedb
 from sentence_transformers import SentenceTransformer
-from groq import Groq
+from google import genai
+from google.genai import types
 
 # PDF extraction uses a fast two-tier approach:
 #   1. pypdfium2  — near-instant native text extraction (already in venv as a transitive dep)
@@ -148,11 +149,11 @@ def extract_text_from_csv(filepath):
 def generate_global_context(filename: str, full_text: str) -> str:
     if not settings.enable_global_context:
         return ""
-    if not settings.groq_api_key:
+    if not settings.gemini_api_key:
         return ""
 
     try:
-        client = Groq(api_key=settings.groq_api_key)
+        client = genai.Client(api_key=settings.gemini_api_key)
         prompt = (
             f"You are an expert academic document analyzer. I am providing you with the first few pages of a document named '{filename}'. "
             "Please provide a strict, 2-sentence summary of this document, and a comma-separated list of the 10 most important "
@@ -162,13 +163,15 @@ def generate_global_context(filename: str, full_text: str) -> str:
             "Keywords: [10 comma separated keywords]\n\n"
             f"Document Text:\n{full_text[:8000]}"
         )
-        response = client.chat.completions.create(
-            model=settings.hyde_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=200,
+        response = client.models.generate_content(
+            model=settings.gemini_lite_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=200,
+            ),
         )
-        return response.choices[0].message.content.strip()
+        return response.text.strip()
     except Exception as e:
         print(f"Failed to generate context for {filename}: {e}")
         return ""

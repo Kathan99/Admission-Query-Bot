@@ -11,9 +11,9 @@ class Settings(BaseSettings):
     hf_token: str = os.getenv("HF_TOKEN", os.getenv("HUGGINGFACE_HUB_TOKEN", ""))
 
     # Providers / models
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-    hyde_model: str = os.getenv("HYDE_MODEL", "llama-3.1-8b-instant")
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+    gemini_lite_model: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3-flash-preview")
 
     # Single-corpus mode (all files live directly under data/)
     single_corpus: bool = os.getenv("SINGLE_CORPUS", "true").strip().lower() in {"1", "true", "yes"}
@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     data_dir: str = os.path.join(storage_dir, "data")
     log_dir: str = os.path.join(storage_dir, "logs")
     universities_json: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "universities.json")
+
+    # MongoDB Atlas — query & answer logging for debugging
+    # Set MONGODB_URI to your Atlas connection string, e.g.:
+    #   mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/
+    mongodb_uri: str = os.getenv("MONGODB_URI", "")
+    mongodb_db: str = os.getenv("MONGODB_DB", "rag_chatbot")
+    mongodb_collection: str = os.getenv("MONGODB_COLLECTION", "query_logs")
+    enable_mongo_logging: bool = os.getenv("ENABLE_MONGO_LOGGING", "true").strip().lower() in {"1", "true", "yes"}
 
     # Ignore unknown keys in .env (e.g., HF_TOKEN), so Settings doesn't crash on extra variables.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

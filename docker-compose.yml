@@ -23,6 +23,11 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_BUCKET=${S3_BUCKET:-}
       - S3_PREFIX=${S3_PREFIX:-pdfs/}
+      # MongoDB Atlas — query logging
+      - MONGODB_URI=${MONGODB_URI:-}
+      - MONGODB_DB=${MONGODB_DB:-rag_chatbot}
+      - MONGODB_COLLECTION=${MONGODB_COLLECTION:-query_logs}
+      - ENABLE_MONGO_LOGGING=${ENABLE_MONGO_LOGGING:-true}
     volumes:
       # LanceDB vector store (persisted across restarts)
       - ./lancedb_db:/app/lancedb_db
