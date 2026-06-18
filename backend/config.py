@@ -12,8 +12,8 @@ class Settings(BaseSettings):
 
     # Providers / models
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-    gemini_lite_model: str = os.getenv("GEMINI_LITE_MODEL", "gemini-3-flash-preview")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_lite_model: str = os.getenv("GEMINI_LITE_MODEL", "gemini-2.5-flash-lite")
 
     # Single-corpus mode (all files live directly under data/)
     single_corpus: bool = os.getenv("SINGLE_CORPUS", "true").strip().lower() in {"1", "true", "yes"}
@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     ocr_scale: float = float(os.getenv("OCR_SCALE", "2.0"))
 
     # Retrieval tuning
-    dense_k: int = 15          # was 30; fetch fewer candidates — most were discarded anyway
-    bm25_k: int = 10
-    fused_k: int = 10
-    final_k: int = 5
+    dense_k: int = 10          # fetch fewer dense candidates — reranker handles quality
+    bm25_k: int = 7
+    fused_k: int = 8
+    final_k: int = 4
     global_search_top_n: int = 3
 
     # HyDE gating/caching
@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     data_dir: str = os.path.join(storage_dir, "data")
     log_dir: str = os.path.join(storage_dir, "logs")
     universities_json: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "universities.json")
+
+    # Bearer token for /chat and /api/admin/* endpoints
+    api_bearer_token: str = os.getenv("API_BEARER_TOKEN", "")
 
     # MongoDB Atlas — query & answer logging for debugging
     # Set MONGODB_URI to your Atlas connection string, e.g.:

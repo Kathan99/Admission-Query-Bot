@@ -7,7 +7,7 @@ import hashlib
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,7 @@ try:
     from backend.cache import semantic_cache
     from backend.guardrails import Guardrails
     from backend.mongo_logger import MongoLogger
+    from backend.auth import verify_bearer
 except ModuleNotFoundError:
     import sys
 
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
     from backend.cache import semantic_cache
     from backend.guardrails import Guardrails
     from backend.mongo_logger import MongoLogger
+    from backend.auth import verify_bearer
 
 app = FastAPI(title="Multi-University RAG Chatbot")
 
@@ -152,7 +154,7 @@ def get_universities():
     return load_universities()
 
 
-@app.post("/api/admin/upload")
+@app.post("/api/admin/upload", dependencies=[Depends(verify_bearer)])
 async def admin_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -194,7 +196,7 @@ async def admin_upload(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/admin/ingestion-status")
+@app.get("/api/admin/ingestion-status", dependencies=[Depends(verify_bearer)])
 def ingestion_status():
     return JSONResponse(_ingestion_status)
 
@@ -275,7 +277,7 @@ def _extract_and_filter_sources(answer_text: str, all_sources: list) -> tuple[st
     return clean_answer, deduped
 
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(verify_bearer)])
 async def chat_endpoint(request: ChatRequest):
     t_start = time.perf_counter()
     timings = {
